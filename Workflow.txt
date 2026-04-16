@@ -1,0 +1,387 @@
+Revised End-to-End Workflow
+Stage 1 — Cheque Ingestion
+	•	High-speed cheque scanner (Panini/Canon) captures front + back
+	•	Stored as TIFF 300 DPI to AWS S3
+	•	Event pushed to Kafka topic cheque.ingested
+
+Stage 2 — Image Preprocessing
+	•	OpenCV — deskew, denoise, binarization, contrast enhancement
+	•	Crop into zones: amount box, date, payee, signature, MICR line
+	•	Output clean image patches per field
+
+Stage 3 — OCR Extraction
+
+Output → structured JSON with all extracted fields
+
+Stage 4 — IDP Validation
+	•	LayoutLMv3 validates field positions and consistency
+	•	Rules engine checks: amount words vs numeric match, stale/post-dated cheque, valid IFSC from RBI master DB
+	•	Flags any field-level anomalies
+
+Stage 5 — Risk Scoring
+
+
+Output → Risk score 0–100 with SHAP explainability
+
+Stage 6 — Agentic Decision Engine
+	•	LangGraph orchestrates the full pipeline as an agent
+	•	Claude Sonnet reasons over risk score + validation flags
+	•	Decision logic:
+
+0–30   → Auto Approve
+31–70  → Secondary checks
+71–100 → Manual review queue
+
+Stage 7 — Manual Review (High Risk Only)
+	•	Temporal.io manages human-in-the-loop queue
+	•	React dashboard shows cheque image + AI reasoning summary
+	•	2-hour SLA with auto-escalation
+
+Stage 8 — NGCB Export
+	•	Structured data + risk score pushed to banking system
+	•	Apache Camel handles ISO 8583 / CTS XML formatting
+	•	mTLS secured, HSM-signed
+
+Stage 9 — NPCI Submission
+	•	Verified cheque bundle (TIFF + XML) sent to NPCI via CTS protocol
+	•	Python reconciliation agent handles ACK/NACK
+	•	Cleared funds reflect in accounts
+
+One-Line Flow
+
+Scan → Preprocess → PaddleOCR-VL-1.5 + Textract(MICR) 
+→ IDP Validate → Risk Score → LangGraph Agent 
+→ Auto Approve / Manual Review → NGCB → NPCI
+
+
+
+
+Input/Output Format for Each Stage
+
+Stage 1 — Cheque Ingestion
+
+Input
+
+Physical cheque inserted into scanner
+
+
+Output:
+{
+  "cheque_id": "CHQ20260416001",
+  "scan_timestamp": "2026-04-16T09:30:00Z",
+  "front_image": "s3://cheques/CHQ20260416001_front.tiff",
+  "back_image": "s3://cheques/CHQ20260416001_back.tiff",
+  "scanner_id": "SCN-BRN-MUM-001",
+  "branch_ifsc": "SBIN0001234",
+  "resolution_dpi": 300,
+  "status": "ingested"
+}
+
+Stage 2 — Image Preprocessing
+Input:
+
+s3://cheques/CHQ20260416001_front.tiff (raw scan)
+
+
+Output;
+{
+  "cheque_id": "CHQ20260416001",
+  "preprocessed_full": "s3://processed/CHQ20260416001_clean.tiff",
+  "zones": {
+    "payee_crop": "s3://zones/CHQ20260416001_payee.png",
+    "amount_numeric_crop": "s3://zones/CHQ20260416001_amount_num.png",
+    "amount_words_crop": "s3://zones/CHQ20260416001_amount_words.png",
+    "date_crop": "s3://zones/CHQ20260416001_date.png",
+    "signature_crop": "s3://zones/CHQ20260416001_signature.png",
+    "micr_crop": "s3://zones/CHQ20260416001_micr.png"
+  },
+  "image_quality_score": 94.5,
+  "skew_corrected": true,
+  "noise_removed": true
+}
+
+
+Stage 3 — OCR Extraction
+Input:
+{
+  "cheque_id": "CHQ20260416001",
+  "zones": { ...cropped image paths from Stage 2... }
+}
+
+
+Output (PaddleOCR-VL-1.5):
+{
+  "cheque_id": "CHQ20260416001",
+  "ocr_engine": "PaddleOCR-VL-1.5",
+  "extracted_fields": {
+    "payee_name": "Rajesh Kumar",
+    "amount_numeric": "50000",
+    "amount_words": "Fifty Thousand Only",
+    "date": "15/04/2026",
+    "bank_name": "State Bank of India",
+    "branch": "Andheri West Mumbai",
+    "account_number": "XXXXXXXX9876"
+  },
+  "confidence_scores": {
+    "payee_name": 0.97,
+    "amount_numeric": 0.99,
+    "amount_words": 0.94,
+    "date": 0.98
+  }
+}
+
+Output (AWS Textract — MICR line):
+
+{
+  "cheque_id": "CHQ20260416001",
+  "ocr_engine": "AWS-Textract-MICR",
+  "micr_fields": {
+    "cheque_number": "000123",
+    "micr_code": "400002345",
+    "account_number": "12345678901",
+    "transaction_code": "29"
+  },
+  "confidence": 0.99
+}
+
+
+Stage 4 — IDP Validation
+Input:
+{
+  "cheque_id": "CHQ20260416001",
+  "extracted_fields": { ...OCR output from Stage 3... },
+  "micr_fields": { ...Textract output... }
+}
+
+Output:
+
+{
+  "cheque_id": "CHQ20260416001",
+  "validation_results": {
+    "amount_match": {
+      "status": "PASS",
+      "numeric": 50000,
+      "words_parsed": 50000,
+      "match": true
+    },
+    "date_check": {
+      "status": "PASS",
+      "is_stale": false,
+      "is_post_dated": false,
+      "date_parsed": "2026-04-15"
+    },
+    "ifsc_check": {
+      "status": "PASS",
+      "ifsc": "SBIN0001234",
+      "bank": "State Bank of India",
+      "rbi_verified": true
+    },
+    "micr_account_match": {
+      "status": "PASS",
+      "ocr_account": "XXXXXXXX9876",
+      "micr_account": "12345678901",
+      "match": true
+    }
+  },
+  "overall_validation": "PASS",
+  "flags": []
+}
+
+Example with flags:
+
+{
+  "overall_validation": "FAIL",
+  "flags": [
+    "AMOUNT_MISMATCH: numeric=50000 words=500",
+    "DATE_STALE: cheque dated 2025-12-01"
+  ]
+}
+
+Stage 5 — Risk Scoring
+Input:
+
+{
+  "cheque_id": "CHQ20260416001",
+  "signature_crop": "s3://zones/CHQ20260416001_signature.png",
+  "full_image": "s3://processed/CHQ20260416001_clean.tiff",
+  "amount": 50000,
+  "account_number": "12345678901",
+  "validation_result": "PASS"
+}
+
+
+Outout:
+
+{
+  "cheque_id": "CHQ20260416001",
+  "risk_score": 22,
+  "risk_level": "LOW",
+  "model_scores": {
+    "signature_match": {
+      "model": "SigNet",
+      "score": 0.95,
+      "verdict": "GENUINE"
+    },
+    "tampering_detection": {
+      "model": "EfficientNet-B4",
+      "score": 0.04,
+      "verdict": "NO_TAMPERING"
+    },
+    "amount_anomaly": {
+      "model": "XGBoost",
+      "score": 0.12,
+      "verdict": "NORMAL"
+    },
+    "account_behavior": {
+      "model": "LSTM",
+      "score": 0.18,
+      "verdict": "NORMAL"
+    }
+  },
+  "shap_explanation": {
+    "top_risk_factors": [],
+    "top_safe_factors": ["signature_match", "no_tampering"]
+  }
+}
+
+Stage 6 — Agentic Decision Engine (LangGraph + Claude)
+Input:
+
+{
+  "cheque_id": "CHQ20260416001",
+  "risk_score": 22,
+  "risk_level": "LOW",
+  "validation_result": "PASS",
+  "flags": [],
+  "amount": 50000
+}
+
+
+Claude Reasoning Output:
+
+Risk score is 22 (LOW). All IDP validations passed.
+Signature verified as genuine. No tampering detected.
+Amount ₹50,000 is within normal transaction range for this account.
+Decision: AUTO APPROVE
+
+
+Final Output:
+
+{
+  "cheque_id": "CHQ20260416001",
+  "decision": "AUTO_APPROVE",
+  "confidence": 0.96,
+  "reasoning": "Low risk score, all validations passed, genuine signature",
+  "routed_to": "NGCB_EXPORT",
+  "timestamp": "2026-04-16T09:31:45Z"
+}
+
+Stage 7 — Manual Review (High Risk Example)
+Input:
+
+{
+  "cheque_id": "CHQ20260416002",
+  "decision": "MANUAL_REVIEW",
+  "risk_score": 78,
+  "flags": ["SIGNATURE_MISMATCH", "AMOUNT_ANOMALY"],
+  "cheque_image": "s3://processed/CHQ20260416002_clean.tiff",
+  "ai_summary": "Signature confidence 54%. Amount ₹9,80,000 unusual for this account."
+}
+
+Output (after human reviews):
+
+{
+  "cheque_id": "CHQ20260416002",
+  "reviewer_id": "OFC-MUM-045",
+  "human_decision": "REJECT",
+  "rejection_reason": "Signature does not match bank records",
+  "reviewed_at": "2026-04-16T10:15:00Z",
+  "routed_to": "REJECTED_QUEUE"
+}
+
+Stage 8 — NGCB Export
+Input:
+
+{
+  "cheque_id": "CHQ20260416001",
+  "decision": "AUTO_APPROVE",
+  "extracted_fields": { ...all OCR fields... },
+  "risk_score": 22
+}
+
+
+Output (CTS XML format sent to NGCB):
+
+<ChequeRecord>
+  <ChequeID>CHQ20260416001</ChequeID>
+  <PayeeName>Rajesh Kumar</PayeeName>
+  <Amount>50000.00</Amount>
+  <Date>2026-04-15</Date>
+  <IFSC>SBIN0001234</IFSC>
+  <AccountNumber>12345678901</AccountNumber>
+  <MICRCode>400002345</MICRCode>
+  <RiskScore>22</RiskScore>
+  <Decision>APPROVED</Decision>
+  <ImageRef>s3://cheques/CHQ20260416001_front.tiff</ImageRef>
+</ChequeRecord>
+
+Stage 9 — NPCI Submission
+Input:
+
+CTS XML bundle + TIFF images from Stage 8
+
+Output (ACK from NPCI):
+
+{
+  "cheque_id": "CHQ20260416001",
+  "npci_reference": "NPCI20260416XYZ789",
+  "status": "ACCEPTED",
+  "clearing_date": "2026-04-17",
+  "settlement_time": "2026-04-17T08:00:00Z",
+  "message": "Cheque accepted for clearing"
+}
+
+
+NACK example:
+
+{
+  "cheque_id": "CHQ20260416002",
+  "npci_reference": "NPCI20260416ABC123",
+  "status": "REJECTED",
+  "error_code": "E004",
+  "reason": "Image quality below threshold",
+  "action": "RESCAN_REQUIRED"
+}
+
+Complete Flow Summary
+
+Physical Cheque
+      ↓
+[S1] Ingestion      → cheque_id + S3 paths
+      ↓
+[S2] Preprocessing  → cropped zone images
+      ↓
+[S3] OCR            → structured JSON fields
+      ↓
+[S4] IDP Validate   → PASS/FAIL + flags
+      ↓
+[S5] Risk Score     → score 0-100 + explanations
+      ↓
+[S6] Agent Decision → AUTO_APPROVE / MANUAL_REVIEW / REJECT
+      ↓              ↓
+[S7] Human Review  (if flagged)
+      ↓
+[S8] NGCB Export    → CTS XML
+      ↓
+[S9] NPCI Submit    → ACK/NACK + clearing date
+
+
+
+
+
+
+
+
+
+
+
