@@ -1,0 +1,1237 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Cheque Clearing Workflow</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #060912;
+    --surface: #0d1525;
+    --surface2: #111d33;
+    --border: rgba(99,179,237,0.15);
+    --accent: #3b9eff;
+    --accent2: #00e5c0;
+    --accent3: #f59e0b;
+    --accent4: #f43f5e;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --glow: rgba(59,158,255,0.3);
+  }
+
+- { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+background: var(–bg);
+color: var(–text);
+font-family: ‘Syne’, sans-serif;
+min-height: 100vh;
+overflow-x: hidden;
+}
+
+/* Animated grid background */
+body::before {
+content: ‘’;
+position: fixed;
+inset: 0;
+background-image:
+linear-gradient(rgba(59,158,255,0.03) 1px, transparent 1px),
+linear-gradient(90deg, rgba(59,158,255,0.03) 1px, transparent 1px);
+background-size: 40px 40px;
+pointer-events: none;
+z-index: 0;
+}
+
+.container {
+max-width: 1400px;
+margin: 0 auto;
+padding: 60px 40px;
+position: relative;
+z-index: 1;
+}
+
+/* HEADER */
+.header {
+text-align: center;
+margin-bottom: 80px;
+animation: fadeDown 0.8s ease both;
+}
+
+.header-badge {
+display: inline-flex;
+align-items: center;
+gap: 8px;
+background: rgba(59,158,255,0.1);
+border: 1px solid rgba(59,158,255,0.3);
+border-radius: 100px;
+padding: 6px 18px;
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 11px;
+color: var(–accent);
+letter-spacing: 2px;
+text-transform: uppercase;
+margin-bottom: 24px;
+}
+
+.header-badge::before {
+content: ‘’;
+width: 6px; height: 6px;
+background: var(–accent2);
+border-radius: 50%;
+animation: pulse 2s infinite;
+}
+
+.header h1 {
+font-size: clamp(32px, 5vw, 64px);
+font-weight: 800;
+line-height: 1.1;
+background: linear-gradient(135deg, #fff 0%, var(–accent) 50%, var(–accent2) 100%);
+-webkit-background-clip: text;
+-webkit-text-fill-color: transparent;
+background-clip: text;
+margin-bottom: 16px;
+}
+
+.header p {
+color: var(–muted);
+font-size: 18px;
+font-weight: 400;
+max-width: 600px;
+margin: 0 auto;
+line-height: 1.6;
+}
+
+/* STATS ROW */
+.stats-row {
+display: grid;
+grid-template-columns: repeat(4, 1fr);
+gap: 16px;
+margin-bottom: 80px;
+animation: fadeUp 0.8s 0.2s ease both;
+}
+
+.stat-card {
+background: var(–surface);
+border: 1px solid var(–border);
+border-radius: 16px;
+padding: 24px;
+text-align: center;
+position: relative;
+overflow: hidden;
+}
+
+.stat-card::before {
+content: ‘’;
+position: absolute;
+top: 0; left: 0; right: 0;
+height: 2px;
+background: linear-gradient(90deg, transparent, var(–accent), transparent);
+}
+
+.stat-value {
+font-size: 32px;
+font-weight: 800;
+color: var(–accent);
+font-family: ‘JetBrains Mono’, monospace;
+}
+
+.stat-label {
+font-size: 12px;
+color: var(–muted);
+text-transform: uppercase;
+letter-spacing: 1px;
+margin-top: 6px;
+}
+
+/* PIPELINE SECTION TITLE */
+.section-label {
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 11px;
+color: var(–accent2);
+text-transform: uppercase;
+letter-spacing: 3px;
+margin-bottom: 32px;
+display: flex;
+align-items: center;
+gap: 12px;
+}
+
+.section-label::after {
+content: ‘’;
+flex: 1;
+height: 1px;
+background: linear-gradient(90deg, var(–accent2), transparent);
+}
+
+/* MAIN PIPELINE */
+.pipeline {
+display: flex;
+flex-direction: column;
+gap: 0;
+}
+
+.pipeline-row {
+display: grid;
+gap: 20px;
+margin-bottom: 0;
+position: relative;
+}
+
+.pipeline-row.row-4 { grid-template-columns: repeat(4, 1fr); }
+.pipeline-row.row-3 { grid-template-columns: repeat(3, 1fr); }
+.pipeline-row.row-2 { grid-template-columns: 1fr 1fr; }
+.pipeline-row.row-1 { grid-template-columns: 1fr; max-width: 400px; }
+
+/* CONNECTOR */
+.connector {
+display: flex;
+align-items: center;
+justify-content: center;
+height: 50px;
+position: relative;
+}
+
+.connector-line {
+width: 2px;
+height: 100%;
+background: linear-gradient(180deg, var(–accent), var(–accent2));
+position: relative;
+}
+
+.connector-arrow {
+position: absolute;
+bottom: -6px;
+left: 50%;
+transform: translateX(-50%);
+width: 0;
+height: 0;
+border-left: 6px solid transparent;
+border-right: 6px solid transparent;
+border-top: 8px solid var(–accent2);
+}
+
+.connector-label {
+position: absolute;
+right: calc(50% + 16px);
+top: 50%;
+transform: translateY(-50%);
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 10px;
+color: var(–muted);
+white-space: nowrap;
+background: var(–bg);
+padding: 3px 8px;
+border-radius: 4px;
+border: 1px solid var(–border);
+}
+
+/* STAGE CARD */
+.stage-card {
+background: var(–surface);
+border: 1px solid var(–border);
+border-radius: 20px;
+padding: 24px;
+position: relative;
+overflow: hidden;
+transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+cursor: pointer;
+animation: fadeUp 0.6s ease both;
+}
+
+.stage-card:hover {
+transform: translateY(-4px);
+border-color: var(–accent);
+box-shadow: 0 20px 60px var(–glow), 0 0 0 1px rgba(59,158,255,0.2);
+}
+
+.stage-card::before {
+content: ‘’;
+position: absolute;
+inset: 0;
+background: radial-gradient(ellipse at top left, rgba(59,158,255,0.05), transparent 70%);
+pointer-events: none;
+}
+
+/* Color variants */
+.stage-card.teal { –card-accent: #00e5c0; }
+.stage-card.teal:hover { border-color: var(–card-accent); box-shadow: 0 20px 60px rgba(0,229,192,0.2); }
+.stage-card.teal::before { background: radial-gradient(ellipse at top left, rgba(0,229,192,0.05), transparent 70%); }
+
+.stage-card.amber { –card-accent: #f59e0b; }
+.stage-card.amber:hover { border-color: var(–card-accent); box-shadow: 0 20px 60px rgba(245,158,11,0.2); }
+.stage-card.amber::before { background: radial-gradient(ellipse at top left, rgba(245,158,11,0.05), transparent 70%); }
+
+.stage-card.rose { –card-accent: #f43f5e; }
+.stage-card.rose:hover { border-color: var(–card-accent); box-shadow: 0 20px 60px rgba(244,63,94,0.2); }
+.stage-card.rose::before { background: radial-gradient(ellipse at top left, rgba(244,63,94,0.05), transparent 70%); }
+
+.stage-card.purple { –card-accent: #a78bfa; }
+.stage-card.purple:hover { border-color: var(–card-accent); box-shadow: 0 20px 60px rgba(167,139,250,0.2); }
+.stage-card.purple::before { background: radial-gradient(ellipse at top left, rgba(167,139,250,0.05), transparent 70%); }
+
+.stage-number {
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 10px;
+color: var(–muted);
+letter-spacing: 2px;
+margin-bottom: 12px;
+display: flex;
+align-items: center;
+gap: 8px;
+}
+
+.stage-number span {
+background: rgba(59,158,255,0.15);
+color: var(–accent);
+padding: 2px 8px;
+border-radius: 4px;
+font-size: 9px;
+}
+
+.stage-card.teal .stage-number span { background: rgba(0,229,192,0.15); color: var(–accent2); }
+.stage-card.amber .stage-number span { background: rgba(245,158,11,0.15); color: var(–accent3); }
+.stage-card.rose .stage-number span { background: rgba(244,63,94,0.15); color: var(–accent4); }
+.stage-card.purple .stage-number span { background: rgba(167,139,250,0.15); color: #a78bfa; }
+
+.stage-icon {
+font-size: 28px;
+margin-bottom: 12px;
+display: block;
+}
+
+.stage-title {
+font-size: 16px;
+font-weight: 700;
+color: #fff;
+margin-bottom: 8px;
+line-height: 1.3;
+}
+
+.stage-desc {
+font-size: 12px;
+color: var(–muted);
+line-height: 1.6;
+margin-bottom: 16px;
+font-family: ‘JetBrains Mono’, monospace;
+font-weight: 300;
+}
+
+.tech-tags {
+display: flex;
+flex-wrap: wrap;
+gap: 6px;
+}
+
+.tag {
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 9px;
+padding: 3px 8px;
+border-radius: 6px;
+background: rgba(255,255,255,0.05);
+border: 1px solid rgba(255,255,255,0.1);
+color: var(–muted);
+letter-spacing: 0.5px;
+}
+
+/* IO SECTION */
+.io-section {
+margin-top: 20px;
+padding-top: 16px;
+border-top: 1px solid var(–border);
+}
+
+.io-row {
+display: grid;
+grid-template-columns: 1fr 1fr;
+gap: 10px;
+margin-top: 10px;
+}
+
+.io-box {
+background: rgba(0,0,0,0.3);
+border-radius: 10px;
+padding: 10px 12px;
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 9px;
+line-height: 1.7;
+border: 1px solid rgba(255,255,255,0.05);
+}
+
+.io-label {
+font-size: 9px;
+text-transform: uppercase;
+letter-spacing: 1.5px;
+margin-bottom: 6px;
+font-family: ‘JetBrains Mono’, monospace;
+font-weight: 500;
+}
+
+.io-label.in { color: var(–accent); }
+.io-label.out { color: var(–accent2); }
+
+.io-field {
+color: #94a3b8;
+}
+
+.io-field .key { color: #7dd3fc; }
+.io-field .val { color: #86efac; }
+.io-field .str { color: #fca5a5; }
+
+/* ZONE DETECTION SECTION */
+.zone-section {
+margin-top: 60px;
+animation: fadeUp 0.8s 0.4s ease both;
+}
+
+.zone-grid {
+display: grid;
+grid-template-columns: repeat(3, 1fr);
+gap: 20px;
+margin-top: 32px;
+}
+
+.zone-card {
+background: var(–surface);
+border: 1px solid var(–border);
+border-radius: 16px;
+padding: 24px;
+position: relative;
+overflow: hidden;
+}
+
+.zone-card::after {
+content: attr(data-step);
+position: absolute;
+top: 16px;
+right: 16px;
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 48px;
+font-weight: 800;
+color: rgba(255,255,255,0.03);
+line-height: 1;
+}
+
+.zone-title {
+font-size: 14px;
+font-weight: 700;
+color: #fff;
+margin-bottom: 8px;
+display: flex;
+align-items: center;
+gap: 10px;
+}
+
+.zone-badge {
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 9px;
+padding: 2px 8px;
+border-radius: 4px;
+background: rgba(245,158,11,0.15);
+color: var(–accent3);
+border: 1px solid rgba(245,158,11,0.2);
+}
+
+.zone-desc {
+font-size: 12px;
+color: var(–muted);
+line-height: 1.6;
+font-family: ‘JetBrains Mono’, monospace;
+font-weight: 300;
+}
+
+.zone-code {
+margin-top: 14px;
+background: rgba(0,0,0,0.4);
+border-radius: 8px;
+padding: 12px;
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 10px;
+color: #7dd3fc;
+line-height: 1.7;
+border: 1px solid rgba(59,158,255,0.1);
+}
+
+.zone-code .comment { color: #4b5563; }
+.zone-code .fn { color: #c084fc; }
+.zone-code .str { color: #86efac; }
+
+/* DECISION TREE */
+.decision-section {
+margin-top: 60px;
+animation: fadeUp 0.8s 0.5s ease both;
+}
+
+.decision-tree {
+background: var(–surface);
+border: 1px solid var(–border);
+border-radius: 20px;
+padding: 40px;
+margin-top: 32px;
+position: relative;
+overflow: hidden;
+}
+
+.decision-tree::before {
+content: ‘’;
+position: absolute;
+top: -100px; right: -100px;
+width: 300px; height: 300px;
+background: radial-gradient(circle, rgba(59,158,255,0.05), transparent 70%);
+pointer-events: none;
+}
+
+.dt-center {
+display: flex;
+flex-direction: column;
+align-items: center;
+gap: 20px;
+}
+
+.dt-score-box {
+background: rgba(59,158,255,0.1);
+border: 2px solid var(–accent);
+border-radius: 16px;
+padding: 20px 40px;
+text-align: center;
+position: relative;
+}
+
+.dt-score-box::after {
+content: ‘AGENT DECISION’;
+position: absolute;
+top: -10px;
+left: 50%;
+transform: translateX(-50%);
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 9px;
+background: var(–bg);
+padding: 2px 10px;
+color: var(–accent);
+letter-spacing: 2px;
+white-space: nowrap;
+}
+
+.dt-score-label { font-size: 13px; color: var(–muted); margin-bottom: 6px; font-family: ‘JetBrains Mono’, monospace; }
+.dt-score-val { font-size: 28px; font-weight: 800; color: var(–accent); font-family: ‘JetBrains Mono’, monospace; }
+
+.dt-branches {
+display: grid;
+grid-template-columns: repeat(3, 1fr);
+gap: 20px;
+width: 100%;
+margin-top: 10px;
+}
+
+.dt-branch {
+border-radius: 16px;
+padding: 20px;
+text-align: center;
+position: relative;
+}
+
+.dt-branch::before {
+content: ‘’;
+position: absolute;
+top: -20px;
+left: 50%;
+transform: translateX(-50%);
+width: 2px;
+height: 20px;
+}
+
+.dt-branch.approve { background: rgba(0,229,192,0.08); border: 1px solid rgba(0,229,192,0.3); }
+.dt-branch.approve::before { background: var(–accent2); }
+.dt-branch.review { background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.3); }
+.dt-branch.review::before { background: var(–accent3); }
+.dt-branch.reject { background: rgba(244,63,94,0.08); border: 1px solid rgba(244,63,94,0.3); }
+.dt-branch.reject::before { background: var(–accent4); }
+
+.dt-range {
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 22px;
+font-weight: 800;
+margin-bottom: 8px;
+}
+
+.dt-branch.approve .dt-range { color: var(–accent2); }
+.dt-branch.review .dt-range { color: var(–accent3); }
+.dt-branch.reject .dt-range { color: var(–accent4); }
+
+.dt-action {
+font-size: 14px;
+font-weight: 700;
+color: #fff;
+margin-bottom: 6px;
+}
+
+.dt-desc {
+font-size: 11px;
+color: var(–muted);
+font-family: ‘JetBrains Mono’, monospace;
+line-height: 1.5;
+}
+
+/* COMPLIANCE */
+.compliance-section {
+margin-top: 60px;
+animation: fadeUp 0.8s 0.6s ease both;
+}
+
+.compliance-grid {
+display: grid;
+grid-template-columns: repeat(4, 1fr);
+gap: 16px;
+margin-top: 32px;
+}
+
+.compliance-card {
+background: var(–surface);
+border: 1px solid var(–border);
+border-radius: 14px;
+padding: 20px;
+text-align: center;
+}
+
+.compliance-icon { font-size: 24px; margin-bottom: 10px; }
+.compliance-name { font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 6px; }
+.compliance-desc { font-size: 11px; color: var(–muted); line-height: 1.5; font-family: ‘JetBrains Mono’, monospace; font-weight: 300; }
+
+/* TECH STACK MASTER */
+.techstack-section {
+margin-top: 60px;
+animation: fadeUp 0.8s 0.7s ease both;
+}
+
+.techstack-grid {
+display: grid;
+grid-template-columns: repeat(2, 1fr);
+gap: 20px;
+margin-top: 32px;
+}
+
+.tech-category {
+background: var(–surface);
+border: 1px solid var(–border);
+border-radius: 16px;
+padding: 24px;
+}
+
+.tech-cat-title {
+font-size: 13px;
+font-weight: 700;
+color: var(–accent);
+margin-bottom: 16px;
+text-transform: uppercase;
+letter-spacing: 1px;
+display: flex;
+align-items: center;
+gap: 8px;
+}
+
+.tech-item {
+display: flex;
+justify-content: space-between;
+align-items: center;
+padding: 8px 0;
+border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+.tech-item:last-child { border-bottom: none; }
+
+.tech-name {
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 12px;
+color: #cbd5e1;
+}
+
+.tech-purpose {
+font-size: 11px;
+color: var(–muted);
+font-family: ‘JetBrains Mono’, monospace;
+}
+
+/* FLOW SUMMARY */
+.flow-summary {
+margin-top: 60px;
+background: var(–surface);
+border: 1px solid var(–border);
+border-radius: 20px;
+padding: 40px;
+animation: fadeUp 0.8s 0.8s ease both;
+position: relative;
+overflow: hidden;
+}
+
+.flow-summary::before {
+content: ‘’;
+position: absolute;
+bottom: -80px; left: -80px;
+width: 300px; height: 300px;
+background: radial-gradient(circle, rgba(0,229,192,0.05), transparent 70%);
+}
+
+.flow-line {
+display: flex;
+align-items: center;
+flex-wrap: wrap;
+gap: 8px;
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 12px;
+line-height: 2;
+}
+
+.flow-node {
+background: rgba(59,158,255,0.12);
+border: 1px solid rgba(59,158,255,0.25);
+border-radius: 8px;
+padding: 6px 14px;
+color: #93c5fd;
+white-space: nowrap;
+}
+
+.flow-arrow {
+color: var(–muted);
+font-size: 16px;
+}
+
+/* ANIMATIONS */
+@keyframes fadeDown {
+from { opacity: 0; transform: translateY(-20px); }
+to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeUp {
+from { opacity: 0; transform: translateY(30px); }
+to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse {
+0%, 100% { opacity: 1; transform: scale(1); }
+50% { opacity: 0.5; transform: scale(0.8); }
+}
+
+/* Stagger animations */
+.stage-card:nth-child(1) { animation-delay: 0.1s; }
+.stage-card:nth-child(2) { animation-delay: 0.2s; }
+.stage-card:nth-child(3) { animation-delay: 0.3s; }
+.stage-card:nth-child(4) { animation-delay: 0.4s; }
+
+/* Horizontal flow arrows between cards in same row */
+.pipeline-row {
+position: relative;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+.pipeline-row.row-4, .pipeline-row.row-3 { grid-template-columns: 1fr 1fr; }
+.stats-row { grid-template-columns: 1fr 1fr; }
+.zone-grid, .compliance-grid { grid-template-columns: 1fr 1fr; }
+.dt-branches { grid-template-columns: 1fr; }
+.techstack-grid { grid-template-columns: 1fr; }
+}
+
+.pipeline-row-wrapper {
+position: relative;
+}
+
+.row-label {
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 10px;
+color: var(–muted);
+text-transform: uppercase;
+letter-spacing: 2px;
+margin-bottom: 14px;
+margin-top: 8px;
+padding-left: 4px;
+}
+
+/* Horizontal connector for cards within same row */
+.h-connector {
+position: absolute;
+top: 50%;
+transform: translateY(-50%);
+display: flex;
+align-items: center;
+gap: 0;
+pointer-events: none;
+z-index: 10;
+}
+
+.scrollbar-custom::-webkit-scrollbar { width: 6px; }
+.scrollbar-custom::-webkit-scrollbar-track { background: var(–bg); }
+.scrollbar-custom::-webkit-scrollbar-thumb { background: var(–border); border-radius: 3px; }
+</style>
+
+</head>
+<body>
+
+<div class="container">
+
+  <!-- HEADER -->
+
+  <div class="header">
+    <div class="header-badge">Agentic AI System &nbsp;•&nbsp; Indian Cheque Clearing &nbsp;•&nbsp; RBI CTS-2010</div>
+    <h1>AI-Powered Cheque<br>Clearing Pipeline</h1>
+    <p>End-to-end intelligent document processing from physical cheque to NPCI clearing — powered by OCR, IDP, and agentic AI</p>
+  </div>
+
+  <!-- STATS -->
+
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-value">9</div>
+      <div class="stat-label">Pipeline Stages</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">&lt;30s</div>
+      <div class="stat-label">End-to-End Time</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">99.4%</div>
+      <div class="stat-label">OCR Accuracy</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">0–100</div>
+      <div class="stat-label">Risk Score Range</div>
+    </div>
+  </div>
+
+  <!-- PIPELINE -->
+
+  <div class="section-label">Full Processing Pipeline</div>
+
+  <div class="pipeline">
+
+```
+<!-- ROW 1 -->
+<div class="row-label">Phase 1 — Capture & Extraction</div>
+<div class="pipeline-row row-4">
+
+  <div class="stage-card teal">
+    <div class="stage-number">STAGE <span>01</span></div>
+    <span class="stage-icon">🏦</span>
+    <div class="stage-title">Cheque Ingestion</div>
+    <div class="stage-desc">Physical cheque scanned at branch using Panini/Canon scanner. Stored as TIFF 300 DPI.</div>
+    <div class="tech-tags">
+      <span class="tag">Kafka</span>
+      <span class="tag">AWS S3</span>
+      <span class="tag">FastAPI</span>
+      <span class="tag">TIFF/300DPI</span>
+    </div>
+    <div class="io-section">
+      <div class="io-label in">→ INPUT</div>
+      <div class="io-box"><span class="io-field">Physical cheque inserted into scanner</span></div>
+      <div class="io-label out" style="margin-top:10px">← OUTPUT</div>
+      <div class="io-box">
+        <div class="io-field"><span class="key">cheque_id:</span> <span class="str">"CHQ20260416001"</span></div>
+        <div class="io-field"><span class="key">front_image:</span> <span class="str">s3://front.tiff</span></div>
+        <div class="io-field"><span class="key">dpi:</span> <span class="val">300</span></div>
+        <div class="io-field"><span class="key">status:</span> <span class="str">"ingested"</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage-card">
+    <div class="stage-number">STAGE <span>02</span></div>
+    <span class="stage-icon">🔬</span>
+    <div class="stage-title">Image Preprocessing</div>
+    <div class="stage-desc">Deskew, denoise, binarize. Crop cheque into 6 zones: payee, amount, date, signature, account, MICR.</div>
+    <div class="tech-tags">
+      <span class="tag">OpenCV</span>
+      <span class="tag">YOLOv8</span>
+      <span class="tag">Template Match</span>
+      <span class="tag">Anchor Detection</span>
+    </div>
+    <div class="io-section">
+      <div class="io-label in">→ INPUT</div>
+      <div class="io-box"><span class="io-field">Raw TIFF from S3</span></div>
+      <div class="io-label out" style="margin-top:10px">← OUTPUT</div>
+      <div class="io-box">
+        <div class="io-field"><span class="key">zones.payee:</span> <span class="str">payee.png</span></div>
+        <div class="io-field"><span class="key">zones.amount:</span> <span class="str">amt.png</span></div>
+        <div class="io-field"><span class="key">zones.micr:</span> <span class="str">micr.png</span></div>
+        <div class="io-field"><span class="key">quality_score:</span> <span class="val">94.5</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage-card amber">
+    <div class="stage-number">STAGE <span>03</span></div>
+    <span class="stage-icon">👁️</span>
+    <div class="stage-title">OCR Extraction</div>
+    <div class="stage-desc">PaddleOCR-VL-1.5 extracts all fields. AWS Textract handles the MICR line separately.</div>
+    <div class="tech-tags">
+      <span class="tag">PaddleOCR-VL-1.5</span>
+      <span class="tag">AWS Textract</span>
+      <span class="tag">MICR E-13B</span>
+    </div>
+    <div class="io-section">
+      <div class="io-label in">→ INPUT</div>
+      <div class="io-box"><span class="io-field">Cropped zone images from Stage 2</span></div>
+      <div class="io-label out" style="margin-top:10px">← OUTPUT</div>
+      <div class="io-box">
+        <div class="io-field"><span class="key">payee:</span> <span class="str">"Rajesh Kumar"</span></div>
+        <div class="io-field"><span class="key">amount:</span> <span class="val">50000</span></div>
+        <div class="io-field"><span class="key">date:</span> <span class="str">"15/04/2026"</span></div>
+        <div class="io-field"><span class="key">micr_code:</span> <span class="str">"400002345"</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage-card purple">
+    <div class="stage-number">STAGE <span>04</span></div>
+    <span class="stage-icon">📋</span>
+    <div class="stage-title">IDP Validation</div>
+    <div class="stage-desc">LayoutLMv3 validates field positions. Rules engine checks amount match, stale dates, IFSC from RBI DB.</div>
+    <div class="tech-tags">
+      <span class="tag">LayoutLMv3</span>
+      <span class="tag">Drools</span>
+      <span class="tag">RBI IFSC DB</span>
+    </div>
+    <div class="io-section">
+      <div class="io-label in">→ INPUT</div>
+      <div class="io-box"><span class="io-field">Structured JSON from OCR stage</span></div>
+      <div class="io-label out" style="margin-top:10px">← OUTPUT</div>
+      <div class="io-box">
+        <div class="io-field"><span class="key">amount_match:</span> <span class="val">PASS</span></div>
+        <div class="io-field"><span class="key">date_check:</span> <span class="val">PASS</span></div>
+        <div class="io-field"><span class="key">ifsc_check:</span> <span class="val">PASS</span></div>
+        <div class="io-field"><span class="key">flags:</span> <span class="str">[]</span></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- CONNECTOR -->
+<div class="connector">
+  <div class="connector-line"><div class="connector-arrow"></div></div>
+  <div class="connector-label">Kafka: cheque.validated</div>
+</div>
+
+<!-- ROW 2 -->
+<div class="row-label">Phase 2 — Risk & Decision</div>
+<div class="pipeline-row row-3">
+
+  <div class="stage-card rose">
+    <div class="stage-number">STAGE <span>05</span></div>
+    <span class="stage-icon">🛡️</span>
+    <div class="stage-title">Risk Scoring</div>
+    <div class="stage-desc">Multi-model ensemble: signature verify (SigNet), tamper detection (EfficientNet), amount anomaly (XGBoost), behaviour (LSTM).</div>
+    <div class="tech-tags">
+      <span class="tag">SigNet CNN</span>
+      <span class="tag">EfficientNet-B4</span>
+      <span class="tag">XGBoost</span>
+      <span class="tag">LSTM</span>
+      <span class="tag">SHAP</span>
+    </div>
+    <div class="io-section">
+      <div class="io-label in">→ INPUT</div>
+      <div class="io-box"><span class="io-field">Signature crop + full image + amount + account</span></div>
+      <div class="io-label out" style="margin-top:10px">← OUTPUT</div>
+      <div class="io-box">
+        <div class="io-field"><span class="key">risk_score:</span> <span class="val">22</span></div>
+        <div class="io-field"><span class="key">risk_level:</span> <span class="str">"LOW"</span></div>
+        <div class="io-field"><span class="key">signature:</span> <span class="str">"GENUINE"</span></div>
+        <div class="io-field"><span class="key">tamper:</span> <span class="str">"NONE"</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage-card amber">
+    <div class="stage-number">STAGE <span>06</span></div>
+    <span class="stage-icon">🤖</span>
+    <div class="stage-title">Agentic Decision Engine</div>
+    <div class="stage-desc">LangGraph orchestrates the pipeline. Claude Sonnet reasons over risk score + flags to make final decision with explanation.</div>
+    <div class="tech-tags">
+      <span class="tag">LangGraph</span>
+      <span class="tag">Claude Sonnet</span>
+      <span class="tag">Temporal.io</span>
+      <span class="tag">Drools BRMS</span>
+    </div>
+    <div class="io-section">
+      <div class="io-label in">→ INPUT</div>
+      <div class="io-box"><span class="io-field">Risk score + validation flags + amount</span></div>
+      <div class="io-label out" style="margin-top:10px">← OUTPUT</div>
+      <div class="io-box">
+        <div class="io-field"><span class="key">decision:</span> <span class="str">"AUTO_APPROVE"</span></div>
+        <div class="io-field"><span class="key">confidence:</span> <span class="val">0.96</span></div>
+        <div class="io-field"><span class="key">routed_to:</span> <span class="str">"NGCB"</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage-card">
+    <div class="stage-number">STAGE <span>07</span></div>
+    <span class="stage-icon">👨‍💼</span>
+    <div class="stage-title">Manual Review</div>
+    <div class="stage-desc">Human-in-the-loop for high-risk cheques (score 71–100). React dashboard with 2hr SLA. Auto-escalation if breached.</div>
+    <div class="tech-tags">
+      <span class="tag">Temporal.io</span>
+      <span class="tag">React Dashboard</span>
+      <span class="tag">2hr SLA</span>
+      <span class="tag">WORM Audit</span>
+    </div>
+    <div class="io-section">
+      <div class="io-label in">→ INPUT</div>
+      <div class="io-box"><span class="io-field">High-risk cheque image + AI reasoning summary</span></div>
+      <div class="io-label out" style="margin-top:10px">← OUTPUT</div>
+      <div class="io-box">
+        <div class="io-field"><span class="key">human_decision:</span> <span class="str">"REJECT"</span></div>
+        <div class="io-field"><span class="key">reason:</span> <span class="str">"Sig mismatch"</span></div>
+        <div class="io-field"><span class="key">reviewer_id:</span> <span class="str">"OFC-045"</span></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- CONNECTOR -->
+<div class="connector">
+  <div class="connector-line"><div class="connector-arrow"></div></div>
+  <div class="connector-label">Kafka: cheque.decided</div>
+</div>
+
+<!-- ROW 3 -->
+<div class="row-label">Phase 3 — Clearing & Settlement</div>
+<div class="pipeline-row row-2">
+
+  <div class="stage-card teal">
+    <div class="stage-number">STAGE <span>08</span></div>
+    <span class="stage-icon">🏛️</span>
+    <div class="stage-title">NGCB Export</div>
+    <div class="stage-desc">Structured data + risk score pushed to National Grid Cheque Clearing system via ISO 8583 / CTS XML over mTLS secured channel.</div>
+    <div class="tech-tags">
+      <span class="tag">Apache Camel</span>
+      <span class="tag">ISO 8583</span>
+      <span class="tag">CTS XML</span>
+      <span class="tag">mTLS</span>
+      <span class="tag">HSM Signing</span>
+    </div>
+    <div class="io-section">
+      <div class="io-label in">→ INPUT</div>
+      <div class="io-box"><span class="io-field">Approved cheque data + risk score + decision</span></div>
+      <div class="io-label out" style="margin-top:10px">← OUTPUT</div>
+      <div class="io-box" style="font-size:9px; color: #7dd3fc;">
+        &lt;ChequeRecord&gt;<br>
+        &nbsp;&nbsp;&lt;PayeeName&gt;Rajesh Kumar&lt;/PayeeName&gt;<br>
+        &nbsp;&nbsp;&lt;Amount&gt;50000.00&lt;/Amount&gt;<br>
+        &nbsp;&nbsp;&lt;RiskScore&gt;22&lt;/RiskScore&gt;<br>
+        &lt;/ChequeRecord&gt;
+      </div>
+    </div>
+  </div>
+
+  <div class="stage-card purple">
+    <div class="stage-number">STAGE <span>09</span></div>
+    <span class="stage-icon">✅</span>
+    <div class="stage-title">NPCI Submission</div>
+    <div class="stage-desc">TIFF + XML bundle submitted to NPCI via CTS protocol. Python reconciliation agent handles ACK/NACK. Funds settled T+1.</div>
+    <div class="tech-tags">
+      <span class="tag">NPCI CTS</span>
+      <span class="tag">SFTP/VPN</span>
+      <span class="tag">PKI Certs</span>
+      <span class="tag">Python Reconciler</span>
+    </div>
+    <div class="io-section">
+      <div class="io-label in">→ INPUT</div>
+      <div class="io-box"><span class="io-field">CTS XML bundle + TIFF images</span></div>
+      <div class="io-label out" style="margin-top:10px">← OUTPUT</div>
+      <div class="io-box">
+        <div class="io-field"><span class="key">npci_ref:</span> <span class="str">"NPCI2026XYZ"</span></div>
+        <div class="io-field"><span class="key">status:</span> <span class="str">"ACCEPTED"</span></div>
+        <div class="io-field"><span class="key">clearing_date:</span> <span class="str">"2026-04-17"</span></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+```
+
+  </div>
+
+  <!-- ZONE DETECTION -->
+
+  <div class="zone-section">
+    <div class="section-label">Stage 2 Deep Dive — Zone Identification</div>
+    <div class="zone-grid">
+
+```
+  <div class="zone-card" data-step="01">
+    <div class="zone-title">Template-Based <span class="zone-badge">FAST</span></div>
+    <div class="zone-desc">Uses fixed pixel coordinates from RBI CTS-2010 standard. Works for 80% of clean, aligned scans.</div>
+    <div class="zone-code">
+      <span class="comment"># Fixed CTS-2010 coordinates</span><br>
+      CTS_ZONES = {<br>
+      &nbsp;&nbsp;<span class="str">"payee"</span>: (150, 180, 900, 80),<br>
+      &nbsp;&nbsp;<span class="str">"amount"</span>: (820, 280, 280, 70),<br>
+      &nbsp;&nbsp;<span class="str">"micr"</span>: (50, 580, 1100, 60)<br>
+      }<br>
+      zone = image[y:y+h, x:x+w]
+    </div>
+  </div>
+
+  <div class="zone-card" data-step="02">
+    <div class="zone-title">Anchor-Based <span class="zone-badge">SMART</span></div>
+    <div class="zone-desc">Finds printed anchors (₹ symbol, "Pay", "Date" label, MICR band) and calculates zone positions relative to them.</div>
+    <div class="zone-code">
+      <span class="comment"># Find ₹ symbol anchor</span><br>
+      result = cv2.<span class="fn">matchTemplate</span>(<br>
+      &nbsp;&nbsp;image, rupee_template,<br>
+      &nbsp;&nbsp;cv2.TM_CCOEFF_NORMED<br>
+      )<br>
+      anchor = cv2.<span class="fn">minMaxLoc</span>(result)[-1]<br>
+      amount_zone = image[y:y+70, x:x+280]
+    </div>
+  </div>
+
+  <div class="zone-card" data-step="03">
+    <div class="zone-title">YOLOv8 ML Model <span class="zone-badge">ROBUST</span></div>
+    <div class="zone-desc">Object detection model fine-tuned on Indian cheques. Handles rotation, damage, different bank formats. Fallback for tricky scans.</div>
+    <div class="zone-code">
+      <span class="comment"># ML zone detection</span><br>
+      model = <span class="fn">YOLO</span>(<span class="str">"cheque_zones.pt"</span>)<br>
+      results = model(preprocessed_img)<br>
+      <br>
+      for box in results[0].boxes:<br>
+      &nbsp;&nbsp;label = names[int(box.cls)]<br>
+      &nbsp;&nbsp;zones[label] = crop(box.xyxy)
+    </div>
+  </div>
+
+</div>
+```
+
+  </div>
+
+  <!-- DECISION TREE -->
+
+  <div class="decision-section">
+    <div class="section-label">Stage 6 — Risk-Based Routing Logic</div>
+    <div class="decision-tree">
+      <div class="dt-center">
+        <div class="dt-score-box">
+          <div class="dt-score-label">LangGraph + Claude Sonnet evaluates</div>
+          <div class="dt-score-val">RISK SCORE 0 → 100</div>
+        </div>
+        <div style="width:2px; height:30px; background: linear-gradient(180deg, var(--accent), transparent);"></div>
+        <div class="dt-branches">
+          <div class="dt-branch approve">
+            <div class="dt-range">0 – 30</div>
+            <div class="dt-action">✅ Auto Approve</div>
+            <div class="dt-desc">Low risk. All validations passed. Signature genuine. Sent directly to NGCB export.</div>
+          </div>
+          <div class="dt-branch review">
+            <div class="dt-range">31 – 70</div>
+            <div class="dt-action">⚠️ Secondary Checks</div>
+            <div class="dt-desc">Medium risk. Additional validation triggered. May route to manual review if checks fail.</div>
+          </div>
+          <div class="dt-branch reject">
+            <div class="dt-range">71 – 100</div>
+            <div class="dt-action">🔴 Manual Review</div>
+            <div class="dt-desc">High risk. Routed to human reviewer with 2hr SLA. AI provides reasoning summary.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- COMPLIANCE -->
+
+  <div class="compliance-section">
+    <div class="section-label">Regulatory Compliance</div>
+    <div class="compliance-grid">
+      <div class="compliance-card">
+        <div class="compliance-icon">🏦</div>
+        <div class="compliance-name">RBI CTS-2010</div>
+        <div class="compliance-desc">Image quality standards, MICR format, cheque layout specifications</div>
+      </div>
+      <div class="compliance-card">
+        <div class="compliance-icon">💳</div>
+        <div class="compliance-name">PCI-DSS</div>
+        <div class="compliance-desc">Cardholder & account data encryption, secure transmission standards</div>
+      </div>
+      <div class="compliance-card">
+        <div class="compliance-icon">📡</div>
+        <div class="compliance-name">NPCI Guidelines</div>
+        <div class="compliance-desc">File formats, SLA windows, ICS bundle specifications for clearing</div>
+      </div>
+      <div class="compliance-card">
+        <div class="compliance-icon">🔐</div>
+        <div class="compliance-name">DPDPA 2023</div>
+        <div class="compliance-desc">India data protection act — PII masking in logs, consent management</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TECH STACK -->
+
+  <div class="techstack-section">
+    <div class="section-label">Complete Technology Stack</div>
+    <div class="techstack-grid">
+
+```
+  <div class="tech-category">
+    <div class="tech-cat-title">🧠 AI / ML Models</div>
+    <div class="tech-item"><span class="tech-name">PaddleOCR-VL-1.5</span><span class="tech-purpose">Primary OCR engine</span></div>
+    <div class="tech-item"><span class="tech-name">AWS Textract</span><span class="tech-purpose">MICR line decoding</span></div>
+    <div class="tech-item"><span class="tech-name">LayoutLMv3</span><span class="tech-purpose">IDP field validation</span></div>
+    <div class="tech-item"><span class="tech-name">YOLOv8</span><span class="tech-purpose">Zone detection</span></div>
+    <div class="tech-item"><span class="tech-name">SigNet (Siamese CNN)</span><span class="tech-purpose">Signature verification</span></div>
+    <div class="tech-item"><span class="tech-name">EfficientNet-B4</span><span class="tech-purpose">Tamper detection</span></div>
+    <div class="tech-item"><span class="tech-name">XGBoost</span><span class="tech-purpose">Amount anomaly detection</span></div>
+    <div class="tech-item"><span class="tech-name">LSTM</span><span class="tech-purpose">Account behaviour analysis</span></div>
+    <div class="tech-item"><span class="tech-name">Claude Sonnet</span><span class="tech-purpose">Agentic reasoning & decisions</span></div>
+  </div>
+
+  <div class="tech-category">
+    <div class="tech-cat-title">⚙️ Infrastructure</div>
+    <div class="tech-item"><span class="tech-name">Apache Kafka</span><span class="tech-purpose">Event streaming between stages</span></div>
+    <div class="tech-item"><span class="tech-name">LangGraph</span><span class="tech-purpose">Agentic workflow orchestration</span></div>
+    <div class="tech-item"><span class="tech-name">Temporal.io</span><span class="tech-purpose">Human-in-loop queue + SLA</span></div>
+    <div class="tech-item"><span class="tech-name">Apache Camel</span><span class="tech-purpose">NGCB/NPCI integration ESB</span></div>
+    <div class="tech-item"><span class="tech-name">OpenCV</span><span class="tech-purpose">Image preprocessing</span></div>
+    <div class="tech-item"><span class="tech-name">FastAPI</span><span class="tech-purpose">Microservice API layer</span></div>
+    <div class="tech-item"><span class="tech-name">Kubernetes + Istio</span><span class="tech-purpose">Container orchestration</span></div>
+    <div class="tech-item"><span class="tech-name">PostgreSQL + Redis</span><span class="tech-purpose">Transactional DB + caching</span></div>
+    <div class="tech-item"><span class="tech-name">Prometheus + Grafana</span><span class="tech-purpose">Observability & monitoring</span></div>
+  </div>
+
+</div>
+```
+
+  </div>
+
+  <!-- FLOW SUMMARY -->
+
+  <div class="flow-summary">
+    <div class="section-label" style="margin-bottom: 24px;">Complete Pipeline at a Glance</div>
+    <div class="flow-line">
+      <div class="flow-node">📄 Physical Cheque</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">🏦 S1: Ingest</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">🔬 S2: Preprocess + Zone</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">👁️ S3: PaddleOCR-VL-1.5 + Textract</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">📋 S4: IDP Validate</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">🛡️ S5: Risk Score</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">🤖 S6: LangGraph + Claude Agent</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">👨‍💼 S7: Manual Review (if flagged)</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">🏛️ S8: NGCB Export</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">✅ S9: NPCI → Funds Cleared</div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>
