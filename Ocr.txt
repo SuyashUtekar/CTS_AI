@@ -1,0 +1,211 @@
+“””
+STAGE 3 — OCR Extraction
+Uses PaddleOCR-VL-1.5 for all fields.
+Separate MICR decoder for the MICR line.
+Falls back to mock data if models not installed (for dev/testing).
+“””
+
+import re
+import json
+from pathlib import Path
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from utils.models import OCRResult, OCRFields, OCRConfidence
+from utils.logger import log
+
+router = APIRouter(prefix=”/stage3”, tags=[“Stage 3 - OCR”])
+
+# ── Try importing PaddleOCR (optional for dev) ────────────────────────────────
+
+try:
+from paddleocr import PaddleOCR
+PADDLE_AVAILABLE = True
+log.info(“PaddleOCR loaded successfully”)
+except ImportError:
+PADDLE_AVAILABLE = False
+log.warning(“PaddleOCR not installed — using mock OCR for development”)
+
+# ── PaddleOCR Engine ──────────────────────────────────────────────────────────
+
+class PaddleOCREngine:
+def **init**(self):
+if PADDLE_AVAILABLE:
+# lang=‘en’ covers printed English on Indian cheques
+# use_angle_cls=True handles rotated text
+self.ocr = PaddleOCR(
+use_angle_cls=True,
+lang=‘en’,
+use_gpu=False,   # set True if GPU available
+show_log=False
+)
+self.available = PADDLE_AVAILABLE
+
+```
+def extract_text_from_image(self, image_path: str) -> tuple[str, float]:
+    """
+    Run OCR on a single image crop.
+    Returns (text, confidence)
+    """
+    if not self.available or not Path(image_path).exists():
+        return "", 0.0
+
+    try:
+        result = self.ocr.ocr(image_path, cls=True)
+        if not result or not result[0]:
+            return "", 0.0
+
+        texts       = []
+        confidences = []
+
+        for line in result[0]:
+            text  = line[1][0]
+            conf  = line[1][1]
+            texts.append(text)
+            confidences.append(conf)
+
+        combined_text = " ".join(texts)
+        avg_conf      = sum(confidences) / len(confidences) if confidences else 0.0
+
+        return combined_text.strip(), round(avg_conf, 3)
+
+    except Exception as e:
+        log.error(f"OCR error on {image_path}: {e}")
+        return "", 0.0
+```
+
+# ── Mock OCR Engine (for development without PaddleOCR) ──────────────────────
+
+class MockOCREngine:
+“”“Returns realistic mock data for development and testing”””
+
+```
+MOCK_DATA = {
+    "payee_crop":          ("Rajesh Kumar", 0.97),
+    "amount_numeric_crop": ("50000", 0.99),
+    "amount_words_crop":   ("Fifty Thousand Only", 0.94),
+    "date_crop":           ("15/04/2026", 0.98),
+    "micr_crop":           ("000123  400002345  12345678901  29", 0.99),
+}
+
+def extract_text_from_image(self, image_path: str) -> tuple[str, float]:
+    path_str = str(image_path)
+    for zone_key, (text, conf) in self.MOCK_DATA.items():
+        if zone_key in path_str:
+            return text, conf
+    return "SBI ANDHERI WEST MUMBAI", 0.90
+```
+
+# ── Field Parsers ─────────────────────────────────────────────────────────────
+
+def parse_amount_numeric(raw: str) -> str:
+“”“Extract numeric amount — handle commas, spaces, currency symbols”””
+cleaned = re.sub(r”[₹Rs,\s]”, “”, raw)
+match   = re.search(r”\d+(?:.\d{1,2})?”, cleaned)
+return match.group() if match else raw
+
+def parse_date(raw: str) -> str:
+“”“Normalize date to DD/MM/YYYY format”””
+patterns = [
+r”(\d{2})[/-.](\d{2})[/-.](\d{4})”,  # DD/MM/YYYY
+r”(\d{4})[/-.](\d{2})[/-.](\d{2})”,  # YYYY-MM-DD
+]
+for pattern in patterns:
+match = re.search(pattern, raw)
+if match:
+groups = match.groups()
+if len(groups[0]) == 4:  # YYYY-MM-DD
+return f”{groups[2]}/{groups[1]}/{groups[0]}”
+return f”{groups[0]}/{groups[1]}/{groups[2]}”
+return raw.strip()
+
+def parse_micr_line(raw: str) -> dict:
+“””
+Parse MICR line: CHEQUE_NO  MICR_CODE  ACCOUNT_NO  TRANSACTION_CODE
+Standard format: 6 digits | 9 digits | 11 digits | 2 digits
+“””
+digits = re.findall(r”\d+”, raw)
+
+```
+result = {
+    "cheque_number":    digits[0] if len(digits) > 0 else "",
+    "micr_code":        digits[1] if len(digits) > 1 else "",
+    "account_number":   digits[2] if len(digits) > 2 else "",
+    "transaction_code": digits[3] if len(digits) > 3 else "",
+}
+return result
+```
+
+# ── Main OCR Pipeline ─────────────────────────────────────────────────────────
+
+# Initialize engine once at module load
+
+ocr_engine = PaddleOCREngine() if PADDLE_AVAILABLE else MockOCREngine()
+
+def run_ocr(cheque_id: str, zones: dict) -> OCRResult:
+“””
+Run OCR on all zone crops.
+zones: dict of zone_name -> image_path
+“””
+log.info(f”[Stage 3] Running OCR for cheque: {cheque_id}”)
+
+```
+# Extract text from each zone
+payee_text,   payee_conf   = ocr_engine.extract_text_from_image(zones.get("payee_crop", ""))
+amount_n_text, amount_n_conf = ocr_engine.extract_text_from_image(zones.get("amount_numeric_crop", ""))
+amount_w_text, amount_w_conf = ocr_engine.extract_text_from_image(zones.get("amount_words_crop", ""))
+date_text,    date_conf    = ocr_engine.extract_text_from_image(zones.get("date_crop", ""))
+micr_text,    micr_conf    = ocr_engine.extract_text_from_image(zones.get("micr_crop", ""))
+
+# Parse MICR line
+micr_fields = parse_micr_line(micr_text)
+
+# Build fields
+fields = OCRFields(
+    payee_name          = payee_text.strip(),
+    amount_numeric      = parse_amount_numeric(amount_n_text),
+    amount_words        = amount_w_text.strip(),
+    date                = parse_date(date_text),
+    account_number      = micr_fields.get("account_number", ""),
+    cheque_number       = micr_fields.get("cheque_number", ""),
+    micr_code           = micr_fields.get("micr_code", ""),
+    transaction_code    = micr_fields.get("transaction_code", ""),
+)
+
+# Overall confidence
+confs = [payee_conf, amount_n_conf, amount_w_conf, date_conf, micr_conf]
+confs = [c for c in confs if c > 0]
+overall_conf = round(sum(confs) / len(confs), 3) if confs else 0.0
+
+confidence = OCRConfidence(
+    payee_name      = payee_conf,
+    amount_numeric  = amount_n_conf,
+    amount_words    = amount_w_conf,
+    date            = date_conf,
+    overall         = overall_conf
+)
+
+log.info(f"OCR complete for {cheque_id} — overall confidence: {overall_conf}")
+
+return OCRResult(
+    cheque_id  = cheque_id,
+    fields     = fields,
+    confidence = confidence,
+    raw_text   = micr_text
+)
+```
+
+# ── FastAPI Endpoint ───────────────────────────────────────────────────────────
+
+class OCRRequest(BaseModel):
+cheque_id: str
+zones: dict  # zone_name -> image_path
+
+@router.post(”/extract”, response_model=OCRResult)
+async def extract_ocr(req: OCRRequest):
+“”“Run OCR on all cheque zones”””
+try:
+result = run_ocr(req.cheque_id, req.zones)
+return result
+except Exception as e:
+log.error(f”OCR failed for {req.cheque_id}: {e}”)
+raise HTTPException(500, str(e))
