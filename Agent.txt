@@ -1,0 +1,290 @@
+“””
+STAGE 6 — Agentic Decision Engine
+LangGraph orchestrates the pipeline.
+Claude Sonnet reasons over all signals and makes final decision.
+MCP tools give the agent access to external services.
+“””
+
+import json
+from datetime import datetime
+from typing import TypedDict, Annotated, List
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+import anthropic
+
+from utils.models import (AgentDecision, Decision, RiskResult,
+IDPResult, OCRFields)
+from utils.logger import log
+from config.settings import settings
+
+router = APIRouter(prefix=”/stage6”, tags=[“Stage 6 - Agent Decision”])
+
+# ── MCP Tools Definition ──────────────────────────────────────────────────────
+
+# These are the tools Claude can call during its reasoning
+
+MCP_TOOLS = [
+{
+“name”: “get_account_history”,
+“description”: “Fetch account transaction history to assess if cheque amount is normal”,
+“input_schema”: {
+“type”: “object”,
+“properties”: {
+“account_number”: {“type”: “string”, “description”: “Bank account number”},
+“months”: {“type”: “integer”, “description”: “Number of months of history”, “default”: 6}
+},
+“required”: [“account_number”]
+}
+},
+{
+“name”: “validate_ifsc”,
+“description”: “Validate IFSC code against RBI master database”,
+“input_schema”: {
+“type”: “object”,
+“properties”: {
+“ifsc_code”: {“type”: “string”, “description”: “IFSC code to validate”}
+},
+“required”: [“ifsc_code”]
+}
+},
+{
+“name”: “write_audit_log”,
+“description”: “Write decision and reasoning to immutable audit log for RBI compliance”,
+“input_schema”: {
+“type”: “object”,
+“properties”: {
+“cheque_id”:  {“type”: “string”},
+“decision”:   {“type”: “string”},
+“reasoning”:  {“type”: “string”},
+“risk_score”: {“type”: “integer”}
+},
+“required”: [“cheque_id”, “decision”, “reasoning”, “risk_score”]
+}
+},
+{
+“name”: “publish_decision”,
+“description”: “Publish final decision to event stream so downstream stages are notified”,
+“input_schema”: {
+“type”: “object”,
+“properties”: {
+“cheque_id”: {“type”: “string”},
+“decision”:  {“type”: “string”},
+“route_to”:  {“type”: “string”,
+“enum”: [“NGCB_EXPORT”, “MANUAL_REVIEW”, “REJECTED_QUEUE”]}
+},
+“required”: [“cheque_id”, “decision”, “route_to”]
+}
+}
+]
+
+# ── MCP Tool Executor ─────────────────────────────────────────────────────────
+
+def execute_mcp_tool(tool_name: str, tool_input: dict) -> str:
+“””
+Execute MCP tool call and return result as string.
+In production: each tool calls its actual backend service.
+“””
+log.info(f”MCP tool called: {tool_name} with input: {tool_input}”)
+
+```
+if tool_name == "get_account_history":
+    # Production: query PostgreSQL / core banking system
+    account = tool_input.get("account_number", "")
+    return json.dumps({
+        "account_number": account,
+        "avg_monthly_transaction": 45000,
+        "max_single_transaction": 200000,
+        "total_cheques_last_6m": 12,
+        "suspicious_activity": False,
+        "account_status": "ACTIVE"
+    })
+
+elif tool_name == "validate_ifsc":
+    # Production: query RBI IFSC master database
+    ifsc = tool_input.get("ifsc_code", "")
+    return json.dumps({
+        "ifsc": ifsc,
+        "valid": True,
+        "bank": "State Bank of India",
+        "branch": "Andheri West",
+        "city": "Mumbai",
+        "active": True
+    })
+
+elif tool_name == "write_audit_log":
+    # Production: write to Elasticsearch / WORM storage
+    log.info(f"AUDIT LOG: {json.dumps(tool_input)}")
+    return json.dumps({"logged": True, "log_id": f"LOG_{datetime.now().timestamp()}"})
+
+elif tool_name == "publish_decision":
+    # Production: publish to Kafka topic cheque.decided
+    log.info(f"EVENT PUBLISHED: {json.dumps(tool_input)}")
+    return json.dumps({"published": True, "topic": "cheque.decided"})
+
+return json.dumps({"error": f"Unknown tool: {tool_name}"})
+```
+
+# ── Build Agent Prompt ────────────────────────────────────────────────────────
+
+def build_agent_prompt(cheque_id: str, ocr_fields: OCRFields,
+idp_result: IDPResult, risk_result: RiskResult) -> str:
+return f””“You are an expert cheque fraud detection agent for an Indian bank.
+Analyze this cheque and make a clearing decision.
+
+CHEQUE ID: {cheque_id}
+
+EXTRACTED FIELDS:
+
+- Payee: {ocr_fields.payee_name}
+- Amount (Numeric): ₹{ocr_fields.amount_numeric}
+- Amount (Words): {ocr_fields.amount_words}
+- Date: {ocr_fields.date}
+- Account: {ocr_fields.account_number}
+- MICR Code: {ocr_fields.micr_code}
+
+IDP VALIDATION:
+
+- Overall: {idp_result.overall_validation}
+- Amount Match: {idp_result.amount_match.status} — {idp_result.amount_match.detail}
+- Date Check: {idp_result.date_check.status} — {idp_result.date_check.detail}
+- IFSC Check: {idp_result.ifsc_check.status} — {idp_result.ifsc_check.detail}
+- Flags: {idp_result.flags if idp_result.flags else ‘None’}
+
+RISK ASSESSMENT:
+
+- Risk Score: {risk_result.risk_score}/100 ({risk_result.risk_level})
+- Signature: {risk_result.signature_check.verdict} (confidence: {risk_result.signature_check.score})
+- Tampering: {risk_result.tamper_check.verdict}
+- Amount Anomaly: {risk_result.amount_anomaly.verdict}
+- Account Behaviour: {risk_result.account_behaviour.verdict}
+- Risk Factors: {risk_result.top_risk_factors}
+
+DECISION RULES:
+
+- Score 0-30: AUTO_APPROVE (unless critical IDP failure)
+- Score 31-70: Use tools to gather more context, then decide
+- Score 71-100: MANUAL_REVIEW
+
+YOUR TASK:
+
+1. Use available tools to gather additional context if needed
+1. Make a final decision: AUTO_APPROVE, MANUAL_REVIEW, or REJECT
+1. Write audit log with your reasoning
+1. Publish the decision to the event stream
+
+Be concise and decisive. Indian banking regulations require clear justification.”””
+
+# ── Claude Agent with Tool Loop ───────────────────────────────────────────────
+
+def run_claude_agent(cheque_id: str, ocr_fields: OCRFields,
+idp_result: IDPResult, risk_result: RiskResult) -> AgentDecision:
+“””
+Run Claude Sonnet as decision agent with MCP tools.
+Implements agentic tool-use loop.
+“””
+log.info(f”[Stage 6] Running Claude agent for: {cheque_id}”)
+
+```
+client  = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+prompt  = build_agent_prompt(cheque_id, ocr_fields, idp_result, risk_result)
+messages = [{"role": "user", "content": prompt}]
+
+final_decision = Decision.MANUAL_REVIEW
+reasoning      = ""
+confidence     = 0.80
+
+# Agentic loop — Claude calls tools until it reaches a decision
+max_iterations = 5
+for iteration in range(max_iterations):
+    log.debug(f"Agent iteration {iteration + 1}")
+
+    response = client.messages.create(
+        model      = "claude-sonnet-4-5",
+        max_tokens = 1024,
+        tools      = MCP_TOOLS,
+        messages   = messages
+    )
+
+    # Check stop reason
+    if response.stop_reason == "end_turn":
+        # Extract final text response
+        for block in response.content:
+            if hasattr(block, "text"):
+                reasoning = block.text
+        break
+
+    elif response.stop_reason == "tool_use":
+        # Process all tool calls
+        tool_results = []
+
+        for block in response.content:
+            if block.type == "tool_use":
+                tool_result = execute_mcp_tool(block.name, block.input)
+                tool_results.append({
+                    "type":        "tool_result",
+                    "tool_use_id": block.id,
+                    "content":     tool_result
+                })
+
+        # Add assistant response + tool results to history
+        messages.append({"role": "assistant", "content": response.content})
+        messages.append({"role": "user",      "content": tool_results})
+
+    else:
+        break
+
+# Parse decision from Claude's reasoning
+reasoning_lower = reasoning.lower()
+if "auto_approve" in reasoning_lower or "auto approve" in reasoning_lower:
+    final_decision = Decision.AUTO_APPROVE
+    confidence     = 0.95
+    route          = "NGCB_EXPORT"
+elif "reject" in reasoning_lower:
+    final_decision = Decision.REJECT
+    confidence     = 0.90
+    route          = "REJECTED_QUEUE"
+else:
+    final_decision = Decision.MANUAL_REVIEW
+    confidence     = 0.75
+    route          = "MANUAL_REVIEW"
+
+# Override: critical IDP failures always go to manual review
+if idp_result.overall_validation == "FAIL" and final_decision == Decision.AUTO_APPROVE:
+    final_decision = Decision.MANUAL_REVIEW
+    route          = "MANUAL_REVIEW"
+    reasoning     += "\n[Override: IDP validation failed — escalated to manual review]"
+
+log.info(f"Agent decision for {cheque_id}: {final_decision} (confidence: {confidence})")
+
+return AgentDecision(
+    cheque_id  = cheque_id,
+    decision   = final_decision,
+    confidence = confidence,
+    reasoning  = reasoning or f"Risk score {risk_result.risk_score} — {final_decision}",
+    routed_to  = route,
+    timestamp  = datetime.now()
+)
+```
+
+# ── FastAPI Endpoint ───────────────────────────────────────────────────────────
+
+class AgentRequest(BaseModel):
+cheque_id: str
+ocr_fields: OCRFields
+idp_result: IDPResult
+risk_result: RiskResult
+
+@router.post(”/decide”, response_model=AgentDecision)
+async def agent_decide(req: AgentRequest):
+“”“Run Claude agent to make cheque clearing decision”””
+if not settings.anthropic_api_key:
+raise HTTPException(500, “ANTHROPIC_API_KEY not configured”)
+try:
+result = run_claude_agent(
+req.cheque_id, req.ocr_fields,
+req.idp_result, req.risk_result
+)
+return result
+except Exception as e:
+log.error(f”Agent decision failed for {req.cheque_id}: {e}”)
+raise HTTPException(500, str(e))
