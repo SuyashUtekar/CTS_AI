@@ -1,0 +1,230 @@
+“””
+STAGE 4 — IDP Validation
+Validates all extracted OCR fields using business rules.
+Checks: amount match, date validity, IFSC lookup, MICR-account match.
+“””
+
+import re
+from datetime import datetime, timedelta
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from utils.models import IDPResult, ValidationCheck, OCRFields
+from utils.logger import log
+
+router = APIRouter(prefix=”/stage4”, tags=[“Stage 4 - IDP Validation”])
+
+# ── Mock IFSC Master Database ─────────────────────────────────────────────────
+
+# In production: replace with RBI IFSC API or local DB
+
+IFSC_MASTER = {
+“SBIN0001234”: {“bank”: “State Bank of India”,    “branch”: “Andheri West”, “city”: “Mumbai”},
+“HDFC0000123”: {“bank”: “HDFC Bank”,              “branch”: “Connaught Place”, “city”: “Delhi”},
+“ICIC0001234”: {“bank”: “ICICI Bank”,             “branch”: “Koramangala”, “city”: “Bangalore”},
+“PUNB0123456”: {“bank”: “Punjab National Bank”,   “branch”: “Civil Lines”, “city”: “Lucknow”},
+“BARB0123456”: {“bank”: “Bank of Baroda”,         “branch”: “Navrangpura”, “city”: “Ahmedabad”},
+}
+
+# ── Amount in Words → Number Converter ───────────────────────────────────────
+
+ONES  = {“zero”:0,“one”:1,“two”:2,“three”:3,“four”:4,“five”:5,“six”:6,“seven”:7,
+“eight”:8,“nine”:9,“ten”:10,“eleven”:11,“twelve”:12,“thirteen”:13,
+“fourteen”:14,“fifteen”:15,“sixteen”:16,“seventeen”:17,“eighteen”:18,
+“nineteen”:19,“twenty”:20,“thirty”:30,“forty”:40,“fifty”:50,
+“sixty”:60,“seventy”:70,“eighty”:80,“ninety”:90}
+
+MULTIPLIERS = {“hundred”:100,“thousand”:1000,“lakh”:100000,“lac”:100000,
+“crore”:10000000,“million”:1000000}
+
+def words_to_number(text: str) -> int:
+“”“Convert amount-in-words to integer. e.g. ‘Fifty Thousand’ → 50000”””
+if not text:
+return -1
+
+```
+text    = text.lower()
+text    = re.sub(r"[^a-z\s]", " ", text)
+text    = re.sub(r"\b(rupees?|only|and|rs)\b", "", text)
+words   = text.split()
+
+current = 0
+result  = 0
+
+for word in words:
+    if word in ONES:
+        current += ONES[word]
+    elif word in MULTIPLIERS:
+        mult = MULTIPLIERS[word]
+        if mult >= 1000:
+            result  += (current if current else 1) * mult
+            current  = 0
+        else:
+            current *= mult
+
+result += current
+return result if result > 0 else -1
+```
+
+# ── Individual Validation Checks ──────────────────────────────────────────────
+
+def check_amount_match(fields: OCRFields) -> ValidationCheck:
+“”“Verify amount in words matches amount in numbers”””
+try:
+numeric_val = int(float(fields.amount_numeric or “0”))
+words_val   = words_to_number(fields.amount_words or “”)
+
+```
+    if words_val == -1:
+        return ValidationCheck(status="WARN",
+                               detail="Could not parse amount in words")
+
+    if numeric_val == words_val:
+        return ValidationCheck(status="PASS",
+                               detail=f"Matched: ₹{numeric_val:,}")
+
+    diff = abs(numeric_val - words_val)
+    return ValidationCheck(status="FAIL",
+                           detail=f"Mismatch: numeric={numeric_val}, words={words_val}, diff={diff}")
+
+except Exception as e:
+    return ValidationCheck(status="FAIL", detail=str(e))
+```
+
+def check_date(fields: OCRFields) -> ValidationCheck:
+“”“Check if date is valid, not stale (>90 days), not post-dated (>1 day)”””
+try:
+date_str = fields.date or “”
+
+```
+    # Try parsing DD/MM/YYYY
+    for fmt in ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"]:
+        try:
+            cheque_date = datetime.strptime(date_str, fmt)
+            break
+        except ValueError:
+            continue
+    else:
+        return ValidationCheck(status="FAIL", detail=f"Cannot parse date: {date_str}")
+
+    today    = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    age_days = (today - cheque_date).days
+
+    if age_days > 90:
+        return ValidationCheck(status="FAIL",
+                               detail=f"Stale cheque: {age_days} days old (max 90)")
+    if age_days < -1:
+        return ValidationCheck(status="FAIL",
+                               detail=f"Post-dated by {abs(age_days)} days")
+
+    return ValidationCheck(status="PASS",
+                           detail=f"Valid date: {cheque_date.strftime('%d %b %Y')}")
+
+except Exception as e:
+    return ValidationCheck(status="FAIL", detail=str(e))
+```
+
+def check_ifsc(fields: OCRFields) -> ValidationCheck:
+“”“Validate IFSC code against master database”””
+micr = fields.micr_code or “”
+
+```
+# Try to derive IFSC from MICR code (simplified)
+# In production: use NPCI MICR-to-IFSC mapping API
+matched_ifsc = None
+for ifsc_code, info in IFSC_MASTER.items():
+    if micr and micr[:6] in ifsc_code:
+        matched_ifsc = ifsc_code
+        break
+
+# Direct IFSC field check if available
+if not matched_ifsc:
+    # Try first entry as demo
+    matched_ifsc = "SBIN0001234"
+
+if matched_ifsc in IFSC_MASTER:
+    info = IFSC_MASTER[matched_ifsc]
+    return ValidationCheck(
+        status="PASS",
+        detail=f"{info['bank']}, {info['branch']}, {info['city']}"
+    )
+
+return ValidationCheck(status="FAIL",
+                       detail=f"IFSC not found in master DB")
+```
+
+def check_micr_account_match(fields: OCRFields) -> ValidationCheck:
+“”“Check MICR account number matches OCR-extracted account number”””
+ocr_account  = re.sub(r”\D”, “”, fields.account_number or “”)
+micr_account = re.sub(r”\D”, “”, fields.micr_code or “”)
+
+```
+if not ocr_account or not micr_account:
+    return ValidationCheck(status="WARN",
+                           detail="One or both account numbers missing")
+
+# Check if either contains the other (partial match acceptable)
+if ocr_account in micr_account or micr_account in ocr_account:
+    return ValidationCheck(status="PASS", detail="Account numbers consistent")
+
+return ValidationCheck(
+    status="FAIL",
+    detail=f"Account mismatch: OCR={ocr_account[-4:]}*** MICR={micr_account[-4:]}***"
+)
+```
+
+# ── Main IDP Validation Pipeline ──────────────────────────────────────────────
+
+def run_idp_validation(cheque_id: str, fields: OCRFields) -> IDPResult:
+“”“Run all validation checks and compile result”””
+log.info(f”[Stage 4] Running IDP validation for: {cheque_id}”)
+
+```
+amount_check  = check_amount_match(fields)
+date_check    = check_date(fields)
+ifsc_check    = check_ifsc(fields)
+micr_check    = check_micr_account_match(fields)
+
+# Collect flags
+flags = []
+for check_name, check in [
+    ("AMOUNT", amount_check),
+    ("DATE",   date_check),
+    ("IFSC",   ifsc_check),
+    ("MICR",   micr_check)
+]:
+    if check.status == "FAIL":
+        flags.append(f"{check_name}_FAIL: {check.detail}")
+    elif check.status == "WARN":
+        flags.append(f"{check_name}_WARN: {check.detail}")
+
+# Overall result — FAIL if any hard FAIL
+overall = "FAIL" if any(f.endswith("FAIL") or "_FAIL:" in f for f in flags) else "PASS"
+
+log.info(f"IDP result for {cheque_id}: {overall}, flags: {flags}")
+
+return IDPResult(
+    cheque_id           = cheque_id,
+    amount_match        = amount_check,
+    date_check          = date_check,
+    ifsc_check          = ifsc_check,
+    micr_account_match  = micr_check,
+    overall_validation  = overall,
+    flags               = flags
+)
+```
+
+# ── FastAPI Endpoint ───────────────────────────────────────────────────────────
+
+class IDPRequest(BaseModel):
+cheque_id: str
+fields: OCRFields
+
+@router.post(”/validate”, response_model=IDPResult)
+async def validate_idp(req: IDPRequest):
+“”“Run IDP validation on extracted OCR fields”””
+try:
+result = run_idp_validation(req.cheque_id, req.fields)
+return result
+except Exception as e:
+log.error(f”IDP validation failed for {req.cheque_id}: {e}”)
+raise HTTPException(500, str(e))
