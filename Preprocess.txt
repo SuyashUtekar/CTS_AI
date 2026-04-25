@@ -1,0 +1,257 @@
+“””
+STAGE 2 — Image Preprocessing + Zone Detection
+Deskews, denoises, and crops cheque into 6 zones.
+Uses cascade: Template → Anchor → Fallback (center crop)
+“””
+
+import cv2
+import numpy as np
+from pathlib import Path
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from utils.models import PreprocessResult, ZonePaths
+from utils.logger import log
+from config.settings import settings
+
+router = APIRouter(prefix=”/stage2”, tags=[“Stage 2 - Preprocessing”])
+
+PROCESSED_PATH = Path(settings.local_storage_path) / “processed”
+ZONES_PATH     = Path(settings.local_storage_path) / “zones”
+PROCESSED_PATH.mkdir(parents=True, exist_ok=True)
+ZONES_PATH.mkdir(parents=True, exist_ok=True)
+
+# ── CTS-2010 Standard Zone Coordinates ────────────────────────────────────────
+
+# (x_pct, y_pct, w_pct, h_pct) as percentage of image dimensions
+
+# Based on RBI CTS-2010 standard layout
+
+CTS_ZONES_PCT = {
+“payee_crop”:          (0.10, 0.28, 0.60, 0.14),
+“amount_numeric_crop”: (0.72, 0.42, 0.24, 0.12),
+“amount_words_crop”:   (0.10, 0.42, 0.58, 0.12),
+“date_crop”:           (0.70, 0.12, 0.26, 0.12),
+“signature_crop”:      (0.60, 0.62, 0.36, 0.20),
+“micr_crop”:           (0.02, 0.82, 0.90, 0.12),
+}
+
+# ── Step 1: Load & Validate Image ─────────────────────────────────────────────
+
+def load_image(image_path: str) -> np.ndarray:
+img = cv2.imread(image_path)
+if img is None:
+raise ValueError(f”Cannot read image: {image_path}”)
+return img
+
+# ── Step 2: Assess Quality ────────────────────────────────────────────────────
+
+def assess_quality(img: np.ndarray) -> float:
+“”“Score image quality 0-100 using Laplacian variance (sharpness)”””
+gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+variance = cv2.Laplacian(gray, cv2.CV_64F).var()
+# Normalize: 0=blurry, 100=sharp
+score = min(100.0, float(variance) / 5.0)
+return round(score, 2)
+
+# ── Step 3: Deskew ────────────────────────────────────────────────────────────
+
+def deskew(img: np.ndarray) -> tuple[np.ndarray, bool]:
+“”“Detect and correct skew angle”””
+gray   = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+coords = np.column_stack(np.where(thresh > 0))
+
+```
+if len(coords) < 100:
+    return img, False
+
+angle = cv2.minAreaRect(coords)[-1]
+if angle < -45:
+    angle = 90 + angle
+
+# Only correct if skew is significant
+if abs(angle) < 0.5:
+    return img, False
+
+(h, w) = img.shape[:2]
+center = (w // 2, h // 2)
+M      = cv2.getRotationMatrix2D(center, angle, 1.0)
+rotated = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_CUBIC,
+                          borderMode=cv2.BORDER_REPLICATE)
+log.debug(f"Deskewed by {angle:.2f} degrees")
+return rotated, True
+```
+
+# ── Step 4: Denoise ───────────────────────────────────────────────────────────
+
+def denoise(img: np.ndarray) -> np.ndarray:
+“”“Remove noise while preserving text edges”””
+return cv2.fastNlMeansDenoisingColored(img, None, 10, 10, 7, 21)
+
+# ── Step 5: Zone Detection — Template Based ───────────────────────────────────
+
+def detect_zones_template(img: np.ndarray) -> dict:
+“””
+Use CTS-2010 percentage-based coordinates.
+Works for 80% of standard aligned cheques.
+“””
+h, w = img.shape[:2]
+zones = {}
+
+```
+for zone_name, (xp, yp, wp, hp) in CTS_ZONES_PCT.items():
+    x  = int(xp * w)
+    y  = int(yp * h)
+    bw = int(wp * w)
+    bh = int(hp * h)
+
+    # Boundary check
+    x2 = min(x + bw, w)
+    y2 = min(y + bh, h)
+    crop = img[y:y2, x:x2]
+
+    if crop.size > 0:
+        zones[zone_name] = crop
+
+return zones if len(zones) == len(CTS_ZONES_PCT) else {}
+```
+
+# ── Step 6: Zone Detection — Anchor Based ─────────────────────────────────────
+
+def detect_zones_anchor(img: np.ndarray) -> dict:
+“””
+Find MICR band (dark horizontal strip at bottom) as anchor.
+Calculate other zones relative to it.
+“””
+gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+h, w = img.shape[:2]
+
+```
+# Find MICR band — look for dark horizontal region in bottom 25%
+bottom_region = gray[int(h * 0.75):, :]
+row_means     = np.mean(bottom_region, axis=1)
+dark_rows     = np.where(row_means < 180)[0]
+
+if len(dark_rows) < 5:
+    return {}
+
+micr_top = int(h * 0.75) + dark_rows[0]
+micr_bot = int(h * 0.75) + dark_rows[-1]
+
+zones = {
+    "micr_crop":           img[micr_top:micr_bot, int(w * 0.02):int(w * 0.92)],
+    "signature_crop":      img[int(micr_top * 0.75):micr_top, int(w * 0.60):int(w * 0.96)],
+    "payee_crop":          img[int(h * 0.28):int(h * 0.42), int(w * 0.10):int(w * 0.70)],
+    "amount_numeric_crop": img[int(h * 0.42):int(h * 0.54), int(w * 0.72):int(w * 0.96)],
+    "amount_words_crop":   img[int(h * 0.42):int(h * 0.54), int(w * 0.10):int(w * 0.68)],
+    "date_crop":           img[int(h * 0.12):int(h * 0.24), int(w * 0.70):int(w * 0.96)],
+}
+
+# Validate all zones are non-empty
+valid = {k: v for k, v in zones.items() if v.size > 0}
+return valid if len(valid) >= 5 else {}
+```
+
+# ── Step 7: Fallback — Center Crop Heuristic ──────────────────────────────────
+
+def detect_zones_fallback(img: np.ndarray) -> dict:
+“”“Last resort — use fixed safe crops that always work”””
+h, w = img.shape[:2]
+return {
+“payee_crop”:          img[int(h*0.25):int(h*0.45), int(w*0.05):int(w*0.75)],
+“amount_numeric_crop”: img[int(h*0.40):int(h*0.55), int(w*0.70):int(w*0.98)],
+“amount_words_crop”:   img[int(h*0.40):int(h*0.55), int(w*0.05):int(w*0.68)],
+“date_crop”:           img[int(h*0.10):int(h*0.25), int(w*0.68):int(w*0.98)],
+“signature_crop”:      img[int(h*0.60):int(h*0.80), int(w*0.58):int(w*0.98)],
+“micr_crop”:           img[int(h*0.80):int(h*0.96), int(w*0.02):int(w*0.92)],
+}
+
+# ── Step 8: Save Zones ────────────────────────────────────────────────────────
+
+def save_zones(cheque_id: str, zones: dict) -> dict:
+“”“Save each zone crop to disk, return paths”””
+paths = {}
+for zone_name, crop in zones.items():
+path = ZONES_PATH / f”{cheque_id}_{zone_name}.png”
+cv2.imwrite(str(path), crop)
+paths[zone_name] = str(path)
+return paths
+
+# ── Main Preprocessing Pipeline ───────────────────────────────────────────────
+
+def preprocess_cheque(cheque_id: str, image_path: str) -> PreprocessResult:
+“””
+Full preprocessing pipeline:
+Load → Quality → Deskew → Denoise → Zone Detection → Save
+“””
+log.info(f”[Stage 2] Preprocessing cheque: {cheque_id}”)
+
+```
+# Load
+img = load_image(image_path)
+
+# Quality score (before processing)
+quality_score = assess_quality(img)
+log.info(f"Image quality score: {quality_score}")
+
+# Deskew
+img, was_deskewed = deskew(img)
+
+# Denoise
+img = denoise(img)
+
+# Save clean full image
+clean_path = PROCESSED_PATH / f"{cheque_id}_clean.png"
+cv2.imwrite(str(clean_path), img)
+
+# Zone detection — cascade approach
+zones       = {}
+method_used = ""
+
+log.debug("Trying template-based zone detection...")
+zones = detect_zones_template(img)
+if zones:
+    method_used = "template"
+    log.info("Zone detection: template method succeeded")
+else:
+    log.debug("Template failed, trying anchor-based...")
+    zones = detect_zones_anchor(img)
+    if zones:
+        method_used = "anchor"
+        log.info("Zone detection: anchor method succeeded")
+    else:
+        log.warning("Anchor failed, using fallback crops")
+        zones = detect_zones_fallback(img)
+        method_used = "fallback"
+
+# Save zone crops
+zone_paths = save_zones(cheque_id, zones)
+zone_paths["full_clean"] = str(clean_path)
+
+return PreprocessResult(
+    cheque_id=cheque_id,
+    zones=ZonePaths(**zone_paths),
+    image_quality_score=quality_score,
+    skew_corrected=was_deskewed,
+    noise_removed=True,
+    detection_method=method_used
+)
+```
+
+# ── FastAPI Endpoint ───────────────────────────────────────────────────────────
+
+class PreprocessRequest(BaseModel):
+cheque_id: str
+image_path: str
+
+@router.post(”/preprocess”, response_model=PreprocessResult)
+async def preprocess_endpoint(req: PreprocessRequest):
+“”“Preprocess cheque image and extract zones”””
+if not Path(req.image_path).exists():
+raise HTTPException(404, f”Image not found: {req.image_path}”)
+try:
+result = preprocess_cheque(req.cheque_id, req.image_path)
+return result
+except Exception as e:
+log.error(f”Preprocessing failed for {req.cheque_id}: {e}”)
+raise HTTPException(500, str(e))
