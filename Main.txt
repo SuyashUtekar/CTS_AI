@@ -1,0 +1,192 @@
+“””
+MAIN APPLICATION
+Wires all 9 pipeline stages into a single FastAPI app.
+Also exposes /pipeline/run endpoint to process a cheque end-to-end.
+“””
+
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+from pathlib import Path
+from datetime import datetime
+from utils.logger import log
+from config.settings import settings
+
+# Import all stage routers
+
+from stages.stage1_ingest.ingest       import router as stage1_router
+from stages.stage2_preprocess.preprocess import router as stage2_router
+from stages.stage3_ocr.ocr            import router as stage3_router
+from stages.stage4_idp.idp            import router as stage4_router
+from stages.stage5_risk.risk          import router as stage5_router
+from stages.stage6_agent.agent        import router as stage6_router
+
+# Import stage functions for pipeline runner
+
+from stages.stage1_ingest.ingest       import generate_cheque_id, save_image_locally
+from stages.stage2_preprocess.preprocess import preprocess_cheque
+from stages.stage3_ocr.ocr            import run_ocr
+from stages.stage4_idp.idp            import run_idp_validation
+from stages.stage5_risk.risk          import run_risk_scoring
+from stages.stage6_agent.agent        import run_claude_agent
+from utils.models import ChequeRecord, ChequeStatus
+
+# ── App Setup ─────────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+# Create all data directories on startup
+for folder in [“raw”, “processed”, “zones”, “outputs”, “logs”]:
+Path(settings.local_storage_path, folder).mkdir(parents=True, exist_ok=True)
+log.info(“🚀 Cheque Clearing AI System started”)
+log.info(f”Environment: {settings.app_env}”)
+yield
+log.info(“Shutting down…”)
+
+app = FastAPI(
+title       = “AI Cheque Clearing System”,
+description = “Agentic AI pipeline for Indian cheque clearing — RBI CTS-2010 compliant”,
+version     = “1.0.0”,
+lifespan    = lifespan
+)
+
+app.add_middleware(
+CORSMiddleware,
+allow_origins  = [”*”],
+allow_methods  = [”*”],
+allow_headers  = [”*”],
+)
+
+# ── Register Stage Routers ────────────────────────────────────────────────────
+
+app.include_router(stage1_router)
+app.include_router(stage2_router)
+app.include_router(stage3_router)
+app.include_router(stage4_router)
+app.include_router(stage5_router)
+app.include_router(stage6_router)
+
+# ── Full Pipeline Runner ──────────────────────────────────────────────────────
+
+@app.post(”/pipeline/run”, summary=“Run full end-to-end cheque clearing pipeline”)
+async def run_full_pipeline(
+branch_ifsc:  str        = Form(…),
+scanner_id:   str        = Form(…),
+front_image:  UploadFile = File(…)
+):
+“””
+Submit a cheque image and run the complete 6-stage pipeline:
+Ingest → Preprocess → OCR → IDP → Risk → Agent Decision
+“””
+results = {}
+cheque_id = generate_cheque_id()
+log.info(f”=== PIPELINE START: {cheque_id} ===”)
+
+```
+try:
+    # ── Stage 1: Ingest ───────────────────────────────────────────────────
+    log.info(f"[1/6] Ingesting cheque...")
+    front_path = save_image_locally(cheque_id, front_image, "front")
+    results["stage1"] = {
+        "cheque_id":        cheque_id,
+        "front_image_path": front_path,
+        "status":           "INGESTED"
+    }
+
+    # ── Stage 2: Preprocess ───────────────────────────────────────────────
+    log.info(f"[2/6] Preprocessing image...")
+    preprocess_result = preprocess_cheque(cheque_id, front_path)
+    results["stage2"] = preprocess_result.model_dump()
+
+    # Build zones dict
+    zones = {k: v for k, v in preprocess_result.zones.model_dump().items() if v}
+
+    # ── Stage 3: OCR ──────────────────────────────────────────────────────
+    log.info(f"[3/6] Running OCR extraction...")
+    ocr_result = run_ocr(cheque_id, zones)
+    results["stage3"] = ocr_result.model_dump()
+
+    # ── Stage 4: IDP Validation ───────────────────────────────────────────
+    log.info(f"[4/6] Running IDP validation...")
+    idp_result = run_idp_validation(cheque_id, ocr_result.fields)
+    results["stage4"] = idp_result.model_dump()
+
+    # ── Stage 5: Risk Scoring ─────────────────────────────────────────────
+    log.info(f"[5/6] Calculating risk score...")
+    sig_path = zones.get("signature_crop", "")
+    risk_result = run_risk_scoring(
+        cheque_id, sig_path, front_path,
+        ocr_result.fields, idp_result.flags
+    )
+    results["stage5"] = risk_result.model_dump()
+
+    # ── Stage 6: Agent Decision ───────────────────────────────────────────
+    log.info(f"[6/6] Running Claude agent decision...")
+    if settings.anthropic_api_key:
+        decision = run_claude_agent(
+            cheque_id, ocr_result.fields, idp_result, risk_result
+        )
+    else:
+        # Fallback rule-based decision if no API key
+        from utils.models import Decision, AgentDecision
+        score = risk_result.risk_score
+        if score <= settings.auto_approve_threshold:
+            dec, route = Decision.AUTO_APPROVE, "NGCB_EXPORT"
+        elif score <= settings.manual_review_threshold:
+            dec, route = Decision.SECONDARY_CHECK, "SECONDARY_CHECK"
+        else:
+            dec, route = Decision.MANUAL_REVIEW, "MANUAL_REVIEW"
+
+        decision = AgentDecision(
+            cheque_id  = cheque_id,
+            decision   = dec,
+            confidence = 0.80,
+            reasoning  = f"Rule-based: risk_score={score}",
+            routed_to  = route,
+            timestamp  = datetime.now()
+        )
+
+    results["stage6"] = decision.model_dump()
+
+    log.info(f"=== PIPELINE COMPLETE: {cheque_id} → {decision.decision} ===")
+
+    return {
+        "cheque_id":  cheque_id,
+        "final_decision": decision.decision,
+        "risk_score": risk_result.risk_score,
+        "routed_to":  decision.routed_to,
+        "reasoning":  decision.reasoning,
+        "all_stages": results
+    }
+
+except Exception as e:
+    log.error(f"Pipeline failed for {cheque_id}: {e}")
+    raise HTTPException(500, f"Pipeline error: {str(e)}")
+```
+
+# ── Health Check ──────────────────────────────────────────────────────────────
+
+@app.get(”/health”)
+async def health():
+return {
+“status”:      “healthy”,
+“app”:         “AI Cheque Clearing System”,
+“version”:     “1.0.0”,
+“environment”: settings.app_env,
+“timestamp”:   datetime.now().isoformat()
+}
+
+@app.get(”/”)
+async def root():
+return {
+“message”: “AI Cheque Clearing System — RBI CTS-2010 Compliant”,
+“docs”:    “/docs”,
+“health”:  “/health”,
+“pipeline”: “/pipeline/run”
+}
+
+# ── Run ───────────────────────────────────────────────────────────────────────
+
+if **name** == “**main**”:
+import uvicorn
+uvicorn.run(“main:app”, host=“0.0.0.0”, port=8000, reload=True)
