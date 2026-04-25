@@ -1,0 +1,163 @@
+“””
+TEST SCRIPT — Run this to verify your pipeline works end-to-end.
+Creates a synthetic cheque image and runs all 6 stages.
+Usage: python tests/test_pipeline.py
+“””
+
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(**file**))))
+
+import numpy as np
+import cv2
+from pathlib import Path
+from datetime import datetime
+
+# ── Create synthetic test cheque image ───────────────────────────────────────
+
+def create_test_cheque(output_path: str) -> str:
+“”“Generate a synthetic cheque image for testing”””
+img = np.ones((600, 1200, 3), dtype=np.uint8) * 245  # light background
+
+```
+# Draw border
+cv2.rectangle(img, (10, 10), (1190, 590), (100, 100, 100), 2)
+
+# Bank name header
+cv2.putText(img, "STATE BANK OF INDIA", (40, 60),
+            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 128), 2)
+cv2.putText(img, "ANDHERI WEST BRANCH, MUMBAI", (40, 90),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (50, 50, 50), 1)
+
+# Date field
+cv2.putText(img, "Date:", (850, 100),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (50, 50, 50), 1)
+cv2.putText(img, "15/04/2026", (900, 130),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 1)
+
+# Pay line
+cv2.putText(img, "Pay:", (40, 200),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (50, 50, 50), 1)
+cv2.putText(img, "Rajesh Kumar", (100, 200),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+cv2.line(img, (100, 210), (800, 210), (100, 100, 100), 1)
+
+# Amount in words
+cv2.putText(img, "Fifty Thousand Only", (100, 270),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 1)
+
+# Amount box
+cv2.rectangle(img, (870, 240), (1150, 290), (0, 0, 0), 1)
+cv2.putText(img, "Rs. 50000/-", (880, 275),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+
+# Account number
+cv2.putText(img, "A/c No: 12345678901", (40, 350),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (50, 50, 50), 1)
+
+# Signature area
+cv2.rectangle(img, (750, 380), (1150, 490), (200, 200, 200), 1)
+cv2.putText(img, "Authorized Signature", (780, 490),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
+# Fake signature
+cv2.ellipse(img, (950, 430), (80, 30), 30, 0, 360, (0, 0, 0), 1)
+cv2.line(img, (870, 440), (1030, 420), (0, 0, 0), 1)
+
+# MICR line at bottom
+cv2.rectangle(img, (0, 530), (1200, 600), (220, 220, 220), -1)
+cv2.putText(img, "000123  400002345  12345678901  29", (50, 570),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 1)
+
+cv2.imwrite(output_path, img)
+return output_path
+```
+
+# ── Run Pipeline Test ─────────────────────────────────────────────────────────
+
+def test_full_pipeline():
+print(”\n” + “=”*60)
+print(”  AI CHEQUE CLEARING — PIPELINE TEST”)
+print(”=”*60)
+
+```
+# Create test image
+test_img_path = "data/raw/TEST_CHEQUE.jpg"
+Path("data/raw").mkdir(parents=True, exist_ok=True)
+create_test_cheque(test_img_path)
+print(f"\n✅ Test cheque image created: {test_img_path}")
+
+cheque_id = f"CHQ{datetime.now().strftime('%Y%m%d')}TEST01"
+
+# Stage 2: Preprocess
+print(f"\n[Stage 2] Preprocessing...")
+from stages.stage2_preprocess.preprocess import preprocess_cheque
+result2 = preprocess_cheque(cheque_id, test_img_path)
+print(f"  ✅ Quality: {result2.image_quality_score} | Method: {result2.detection_method}")
+print(f"  Zones: {[k for k,v in result2.zones.model_dump().items() if v]}")
+
+# Stage 3: OCR
+print(f"\n[Stage 3] OCR Extraction...")
+from stages.stage3_ocr.ocr import run_ocr
+zones = {k: v for k, v in result2.zones.model_dump().items() if v}
+result3 = run_ocr(cheque_id, zones)
+print(f"  ✅ Payee: {result3.fields.payee_name}")
+print(f"  Amount: ₹{result3.fields.amount_numeric} | Words: {result3.fields.amount_words}")
+print(f"  Date: {result3.fields.date} | MICR: {result3.fields.micr_code}")
+print(f"  Confidence: {result3.confidence.overall}")
+
+# Stage 4: IDP Validation
+print(f"\n[Stage 4] IDP Validation...")
+from stages.stage4_idp.idp import run_idp_validation
+result4 = run_idp_validation(cheque_id, result3.fields)
+print(f"  ✅ Overall: {result4.overall_validation}")
+print(f"  Amount Match: {result4.amount_match.status}")
+print(f"  Date Check: {result4.date_check.status}")
+print(f"  Flags: {result4.flags if result4.flags else 'None'}")
+
+# Stage 5: Risk Scoring
+print(f"\n[Stage 5] Risk Scoring...")
+from stages.stage5_risk.risk import run_risk_scoring
+sig_path = zones.get("signature_crop", "")
+result5 = run_risk_scoring(cheque_id, sig_path, test_img_path,
+                            result3.fields, result4.flags)
+print(f"  ✅ Risk Score: {result5.risk_score}/100 ({result5.risk_level})")
+print(f"  Signature: {result5.signature_check.verdict}")
+print(f"  Tampering: {result5.tamper_check.verdict}")
+print(f"  Safe factors: {result5.top_safe_factors}")
+
+# Stage 6: Agent Decision
+print(f"\n[Stage 6] Agent Decision...")
+from config.settings import settings
+if settings.anthropic_api_key and settings.anthropic_api_key != "your_anthropic_api_key_here":
+    from stages.stage6_agent.agent import run_claude_agent
+    result6 = run_claude_agent(cheque_id, result3.fields, result4, result5)
+else:
+    # Rule-based fallback
+    from utils.models import AgentDecision, Decision
+    score = result5.risk_score
+    dec   = Decision.AUTO_APPROVE if score <= 30 else \
+            Decision.MANUAL_REVIEW if score >= 70 else Decision.SECONDARY_CHECK
+    result6 = AgentDecision(
+        cheque_id  = cheque_id,
+        decision   = dec,
+        confidence = 0.80,
+        reasoning  = f"Rule-based fallback: score={score}",
+        routed_to  = "NGCB_EXPORT" if dec == Decision.AUTO_APPROVE else "MANUAL_REVIEW",
+        timestamp  = datetime.now()
+    )
+    print(f"  ⚠️  No API key — using rule-based decision")
+
+print(f"  ✅ Decision: {result6.decision}")
+print(f"  Confidence: {result6.confidence}")
+print(f"  Routed to: {result6.routed_to}")
+
+print("\n" + "="*60)
+print(f"  PIPELINE COMPLETE ✅")
+print(f"  Cheque ID: {cheque_id}")
+print(f"  Final Decision: {result6.decision}")
+print(f"  Risk Score: {result5.risk_score}/100")
+print("="*60 + "\n")
+```
+
+if **name** == “**main**”:
+test_full_pipeline()
