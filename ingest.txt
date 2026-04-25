@@ -1,0 +1,97 @@
+“””
+STAGE 1 — Cheque Ingestion
+Accepts uploaded cheque images, assigns cheque_id, saves to local storage.
+“””
+
+import uuid
+import shutil
+from datetime import datetime
+from pathlib import Path
+from fastapi import APIRouter, File, UploadFile, Form, HTTPException
+from utils.models import ChequeRecord, ChequeStatus
+from utils.logger import log
+from config.settings import settings
+
+router = APIRouter(prefix=”/stage1”, tags=[“Stage 1 - Ingestion”])
+
+STORAGE_PATH = Path(settings.local_storage_path) / “raw”
+STORAGE_PATH.mkdir(parents=True, exist_ok=True)
+
+def generate_cheque_id() -> str:
+“”“Generate unique cheque ID: CHQ + date + short UUID”””
+date_str = datetime.now().strftime(”%Y%m%d”)
+short_id = str(uuid.uuid4())[:8].upper()
+return f”CHQ{date_str}{short_id}”
+
+def save_image_locally(cheque_id: str, file: UploadFile, side: str) -> str:
+“”“Save uploaded image to local storage, return path”””
+ext = Path(file.filename).suffix or “.jpg”
+filename = f”{cheque_id}_{side}{ext}”
+save_path = STORAGE_PATH / filename
+
+```
+with open(save_path, "wb") as buffer:
+    shutil.copyfileobj(file.file, buffer)
+
+log.info(f"Saved {side} image: {save_path}")
+return str(save_path)
+```
+
+@router.post(”/ingest”, response_model=ChequeRecord)
+async def ingest_cheque(
+branch_ifsc: str = Form(…),
+scanner_id: str = Form(…),
+front_image: UploadFile = File(…),
+back_image: UploadFile = File(None)
+):
+“””
+Accepts cheque scan upload.
+Returns cheque record with ID and image paths.
+“””
+
+```
+# Validate file type
+allowed_types = ["image/jpeg", "image/png", "image/tiff"]
+if front_image.content_type not in allowed_types:
+    raise HTTPException(400, f"Invalid file type: {front_image.content_type}. Use JPEG/PNG/TIFF")
+
+# Validate file size
+front_image.file.seek(0, 2)
+size_mb = front_image.file.tell() / (1024 * 1024)
+front_image.file.seek(0)
+if size_mb > settings.max_file_size_mb:
+    raise HTTPException(400, f"File too large: {size_mb:.1f}MB. Max {settings.max_file_size_mb}MB")
+
+# Generate cheque ID
+cheque_id = generate_cheque_id()
+log.info(f"Ingesting cheque: {cheque_id} from branch {branch_ifsc}")
+
+# Save images
+front_path = save_image_locally(cheque_id, front_image, "front")
+back_path = None
+if back_image and back_image.filename:
+    back_path = save_image_locally(cheque_id, back_image, "back")
+
+# Build record
+record = ChequeRecord(
+    cheque_id=cheque_id,
+    scan_timestamp=datetime.now(),
+    front_image_path=front_path,
+    back_image_path=back_path,
+    scanner_id=scanner_id,
+    branch_ifsc=branch_ifsc,
+    resolution_dpi=300,
+    status=ChequeStatus.INGESTED
+)
+
+log.info(f"Cheque {cheque_id} ingested successfully")
+return record
+```
+
+@router.get(”/status/{cheque_id}”)
+async def get_status(cheque_id: str):
+“”“Check if cheque image exists in storage”””
+matches = list(STORAGE_PATH.glob(f”{cheque_id}_front*”))
+if not matches:
+raise HTTPException(404, f”Cheque {cheque_id} not found”)
+return {“cheque_id”: cheque_id, “found”: True, “path”: str(matches[0])}
