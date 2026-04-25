@@ -1,0 +1,253 @@
+“””
+STAGE 5 — Risk Scoring
+Multi-model ensemble: Signature + Tamper + Amount Anomaly + Behaviour.
+Uses mock models for development; replace with trained models in production.
+“””
+
+import random
+import numpy as np
+from pathlib import Path
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from typing import List
+from utils.models import RiskResult, RiskLevel, ModelScore, OCRFields, IDPResult
+from utils.logger import log
+
+router = APIRouter(prefix=”/stage5”, tags=[“Stage 5 - Risk Scoring”])
+
+# ── Signature Verification Model ─────────────────────────────────────────────
+
+class SignatureVerifier:
+“””
+Production: SigNet (Siamese CNN) comparing signature crop vs bank reference.
+Development: Mock based on image existence and random confidence.
+Replace run() with actual model inference.
+“””
+
+```
+def run(self, signature_path: str, account_number: str) -> ModelScore:
+    if not signature_path or not Path(signature_path).exists():
+        return ModelScore(model="SigNet", score=0.5, verdict="NO_SIGNATURE")
+
+    # ── REPLACE WITH REAL MODEL ──
+    # from models.signet import SigNet
+    # model = SigNet.load("models/signet_weights.pt")
+    # reference = fetch_signature_from_db(account_number)
+    # score = model.compare(signature_path, reference)
+
+    # Mock: simulate genuine signature 85% of time
+    score   = random.uniform(0.75, 0.98)
+    verdict = "GENUINE" if score > 0.70 else "SUSPICIOUS"
+    return ModelScore(model="SigNet", score=round(score, 3), verdict=verdict)
+```
+
+# ── Tamper Detection Model ────────────────────────────────────────────────────
+
+class TamperDetector:
+“””
+Production: EfficientNet-B4 fine-tuned on tampered/genuine cheque images.
+Development: Mock based on image quality heuristics.
+“””
+
+```
+def run(self, image_path: str) -> ModelScore:
+    if not image_path or not Path(image_path).exists():
+        return ModelScore(model="EfficientNet-B4", score=0.5, verdict="UNKNOWN")
+
+    # ── REPLACE WITH REAL MODEL ──
+    # from models.tamper_detector import TamperNet
+    # model = TamperNet.load("models/tamper_weights.pt")
+    # score = model.predict(image_path)  # 0=genuine, 1=tampered
+
+    # Mock: simulate no tampering 90% of time
+    tamper_score = random.uniform(0.01, 0.15)
+    verdict      = "NO_TAMPERING" if tamper_score < 0.5 else "TAMPERING_DETECTED"
+    return ModelScore(model="EfficientNet-B4",
+                      score=round(tamper_score, 3), verdict=verdict)
+```
+
+# ── Amount Anomaly Detection ──────────────────────────────────────────────────
+
+class AmountAnomalyDetector:
+“””
+Production: XGBoost trained on account transaction history.
+Development: Rule-based mock using amount thresholds.
+“””
+
+```
+def run(self, amount: float, account_number: str) -> ModelScore:
+    # ── REPLACE WITH REAL MODEL ──
+    # from models.anomaly import XGBAnomaly
+    # model = XGBAnomaly.load("models/anomaly_weights.pkl")
+    # history = fetch_account_history(account_number)
+    # score = model.predict(amount, history)
+
+    # Mock: flag very large amounts
+    if amount > 1_000_000:
+        score   = random.uniform(0.70, 0.90)
+        verdict = "HIGH_ANOMALY"
+    elif amount > 500_000:
+        score   = random.uniform(0.35, 0.60)
+        verdict = "MODERATE_ANOMALY"
+    else:
+        score   = random.uniform(0.05, 0.20)
+        verdict = "NORMAL"
+
+    return ModelScore(model="XGBoost",
+                      score=round(score, 3), verdict=verdict)
+```
+
+# ── Account Behaviour Model ───────────────────────────────────────────────────
+
+class BehaviourModel:
+“””
+Production: LSTM trained on account transaction sequences.
+Development: Mock based on simple rules.
+“””
+
+```
+def run(self, account_number: str, amount: float) -> ModelScore:
+    # ── REPLACE WITH REAL MODEL ──
+    # from models.lstm_behaviour import LSTMBehaviour
+    # model = LSTMBehaviour.load("models/lstm_weights.pt")
+    # sequence = fetch_last_n_transactions(account_number, n=50)
+    # score = model.predict(sequence, amount)
+
+    # Mock: normal behaviour most of the time
+    score   = random.uniform(0.05, 0.25)
+    verdict = "NORMAL" if score < 0.50 else "ABNORMAL"
+    return ModelScore(model="LSTM",
+                      score=round(score, 3), verdict=verdict)
+```
+
+# ── Risk Score Calculator ─────────────────────────────────────────────────────
+
+def calculate_risk_score(sig: ModelScore, tamper: ModelScore,
+anomaly: ModelScore, behaviour: ModelScore,
+idp_flags: List[str]) -> int:
+“””
+Weighted ensemble to produce final risk score 0-100.
+Weights: Signature 30%, Tamper 30%, Anomaly 20%, Behaviour 10%, IDP 10%
+“””
+# Normalize each score to risk contribution (0-100)
+sig_risk      = (1 - sig.score)     * 100 * 0.30   # low match = high risk
+tamper_risk   = tamper.score        * 100 * 0.30   # high tamper = high risk
+anomaly_risk  = anomaly.score       * 100 * 0.20
+behaviour_risk= behaviour.score     * 100 * 0.10
+
+```
+# IDP flags add fixed risk
+idp_risk = min(len(idp_flags) * 15, 30) * 0.10
+
+total = sig_risk + tamper_risk + anomaly_risk + behaviour_risk + idp_risk
+return min(100, max(0, int(total)))
+```
+
+def get_risk_level(score: int) -> RiskLevel:
+if score <= 30:
+return RiskLevel.LOW
+elif score <= 70:
+return RiskLevel.MEDIUM
+return RiskLevel.HIGH
+
+def get_risk_factors(sig: ModelScore, tamper: ModelScore,
+anomaly: ModelScore, behaviour: ModelScore) -> tuple:
+“”“Return top risk and safe factors for explainability”””
+risk_factors = []
+safe_factors = []
+
+```
+if sig.verdict != "GENUINE":
+    risk_factors.append("Signature mismatch detected")
+else:
+    safe_factors.append("Signature verified as genuine")
+
+if tamper.verdict != "NO_TAMPERING":
+    risk_factors.append("Possible image tampering detected")
+else:
+    safe_factors.append("No tampering detected")
+
+if anomaly.verdict != "NORMAL":
+    risk_factors.append(f"Amount anomaly: {anomaly.verdict}")
+else:
+    safe_factors.append("Amount within normal range")
+
+if behaviour.verdict != "NORMAL":
+    risk_factors.append("Unusual account behaviour pattern")
+else:
+    safe_factors.append("Normal account behaviour")
+
+return risk_factors, safe_factors
+```
+
+# ── Main Risk Pipeline ────────────────────────────────────────────────────────
+
+# Initialize models once
+
+sig_verifier   = SignatureVerifier()
+tamper_detector = TamperDetector()
+anomaly_model  = AmountAnomalyDetector()
+behaviour_model = BehaviourModel()
+
+def run_risk_scoring(cheque_id: str, signature_path: str,
+image_path: str, fields: OCRFields,
+idp_flags: list) -> RiskResult:
+“”“Run full risk scoring pipeline”””
+log.info(f”[Stage 5] Risk scoring for: {cheque_id}”)
+
+```
+amount = float(fields.amount_numeric or 0)
+
+# Run all models
+sig_result       = sig_verifier.run(signature_path, fields.account_number or "")
+tamper_result    = tamper_detector.run(image_path)
+anomaly_result   = anomaly_model.run(amount, fields.account_number or "")
+behaviour_result = behaviour_model.run(fields.account_number or "", amount)
+
+# Calculate composite risk score
+risk_score = calculate_risk_score(sig_result, tamper_result,
+                                   anomaly_result, behaviour_result,
+                                   idp_flags)
+risk_level = get_risk_level(risk_score)
+
+# Get explainability factors
+risk_factors, safe_factors = get_risk_factors(
+    sig_result, tamper_result, anomaly_result, behaviour_result
+)
+
+log.info(f"Risk score for {cheque_id}: {risk_score} ({risk_level})")
+
+return RiskResult(
+    cheque_id          = cheque_id,
+    risk_score         = risk_score,
+    risk_level         = risk_level,
+    signature_check    = sig_result,
+    tamper_check       = tamper_result,
+    amount_anomaly     = anomaly_result,
+    account_behaviour  = behaviour_result,
+    top_risk_factors   = risk_factors,
+    top_safe_factors   = safe_factors
+)
+```
+
+# ── FastAPI Endpoint ───────────────────────────────────────────────────────────
+
+class RiskRequest(BaseModel):
+cheque_id: str
+signature_path: str
+image_path: str
+fields: OCRFields
+idp_flags: list = []
+
+@router.post(”/score”, response_model=RiskResult)
+async def score_risk(req: RiskRequest):
+“”“Run risk scoring on cheque”””
+try:
+result = run_risk_scoring(
+req.cheque_id, req.signature_path,
+req.image_path, req.fields, req.idp_flags
+)
+return result
+except Exception as e:
+log.error(f”Risk scoring failed for {req.cheque_id}: {e}”)
+raise HTTPException(500, str(e))
